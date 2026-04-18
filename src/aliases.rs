@@ -1,0 +1,9 @@
+pub const ACCESSION_NUMBER_ALIASES: &[&str] = &["accession_number", "accession"];
+pub const AE_TITLE_ALIASES: &[&str] = &["ae_title", "ae"];
+pub const DESTINATION_NODE_ALIASES: &[&str] = &["destination_node", "node"];
+pub const MOVE_DESTINATION_ALIASES: &[&str] = &["move_destination", "dest"];
+pub const SERIES_INSTANCE_UID_ALIASES: &[&str] = &["series_instance_uid", "series_uid", "series"];
+pub const SOP_INSTANCE_UID_ALIASES: &[&str] = &["sop_instance_uid", "instance_uid"];
+pub const STUDY_DATE_FROM_ALIASES: &[&str] = &["study_date_from", "date_from"];
+pub const STUDY_DATE_TO_ALIASES: &[&str] = &["study_date_to", "date_to"];
+pub const STUDY_INSTANCE_UID_ALIASES: &[&str] = &["study_instance_uid", "study_uid", "study"];
