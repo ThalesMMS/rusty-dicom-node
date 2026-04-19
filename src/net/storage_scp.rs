@@ -45,6 +45,7 @@ pub struct BackgroundStorageScp {
     received: Arc<AtomicU32>,
     stored: Arc<AtomicU32>,
     failed: Arc<AtomicU32>,
+    port: u16,
     join_handle: Option<std::thread::JoinHandle<Result<()>>>,
 }
 
@@ -76,6 +77,10 @@ impl StorageScpServer {
         let stored = Arc::new(AtomicU32::new(0));
         let failed = Arc::new(AtomicU32::new(0));
         let listener = self.bind_listener()?;
+        let port = listener
+            .local_addr()
+            .context("reading storage SCP listener port")?
+            .port();
         let server = self.clone();
         let thread_stop = stop_flag.clone();
         let thread_received = received.clone();
@@ -95,6 +100,7 @@ impl StorageScpServer {
             received,
             stored,
             failed,
+            port,
             join_handle: Some(join_handle),
         })
     }
@@ -419,6 +425,10 @@ impl StorageScpServer {
 }
 
 impl BackgroundStorageScp {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     pub fn stop(mut self) -> Result<ScpSessionReport> {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(join_handle) = self.join_handle.take() {

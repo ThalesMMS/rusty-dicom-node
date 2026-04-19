@@ -104,6 +104,19 @@ After `cargo install --path .`, replace `cargo run --` with `dicom-node-client`.
 | macOS | Supported | Install Rust and Apple Command Line Tools or Xcode. |
 | Windows | Supported | Install Rust with the MSVC toolchain and Microsoft C++ Build Tools. |
 
+## Testing
+
+Run the full test suite, including in-process DICOM integration tests:
+
+```bash
+cargo test
+```
+
+The integration tests start C-FIND, C-MOVE, and C-STORE test SCPs in-process
+using `dicom-ul`. They bind only to `127.0.0.1`, allocate ephemeral ports, and
+use isolated temporary data directories so they can run in parallel without an
+external PACS or DICOM service.
+
 ## Data Storage Locations
 
 Application data is stored in the platform-specific local data directory:
@@ -247,4 +260,4 @@ The default is `jpeg2000_lossless`.
 
 ## License
 
-MIT license.
+Licensed under either of Apache License, Version 2.0 or MIT license at your option.

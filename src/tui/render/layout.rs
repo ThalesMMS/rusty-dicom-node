@@ -4,10 +4,10 @@ use super::{
     active_block_style, floor_char_boundary, footer_status_text, format_node_row,
     format_query_result_row, format_series_row, format_study_row, local_series_empty_text,
     local_studies_empty_text, query_results_empty_text, remote_nodes_empty_text,
-    render_detail_pane, render_help_modal, render_modal, truncate_uid, Alignment, Block, Borders,
-    Constraint, Direction, FocusPane, Frame, Layout, Line, List, ListItem, ListState, Modifier,
-    Paragraph, Rect, Span, Style, Text, TuiView, Wrap, MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH,
-    TERMINAL_TOO_SMALL_MESSAGE,
+    render_detail_pane, render_help_modal, render_modal, status_summary_lines, truncate_uid,
+    Alignment, Block, Borders, Constraint, Direction, FocusPane, Frame, Layout, Line, List,
+    ListItem, ListState, Modifier, Paragraph, Rect, Span, Style, Text, TuiView, Wrap,
+    MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH, TERMINAL_TOO_SMALL_MESSAGE,
 };
 
 const MAX_VISIBLE_LOGS: usize = 24;
@@ -41,10 +41,7 @@ pub(in crate::tui) fn draw_ui(frame: &mut Frame<'_>, view: &TuiView) {
         ])
         .split(area);
 
-    frame.render_widget(
-        Paragraph::new(view.status.summary_lines()),
-        root[0],
-    );
+    frame.render_widget(Paragraph::new(status_summary_lines(&view.status)), root[0]);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)

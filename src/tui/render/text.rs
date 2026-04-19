@@ -373,7 +373,7 @@ pub(in crate::tui) fn pad_or_truncate(value: &str, width: usize) -> String {
         }
     }
 
-    out.extend(std::iter::repeat_n(' ', width - display_width));
+    out.extend(std::iter::repeat(' ').take(width - display_width));
     out
 }
 

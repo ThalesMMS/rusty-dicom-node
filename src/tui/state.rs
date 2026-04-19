@@ -135,43 +135,41 @@ pub(super) fn move_selection(current: Option<usize>, len: usize, delta: isize) -
     Some(next)
 }
 
-impl TuiStatusSnapshot {
-    pub(super) fn summary_lines(&self) -> Text<'static> {
-        let receiver_mode = if self.receiver_mode.contains("on-demand") {
-            "on-demand"
-        } else {
-            "standalone"
-        };
+pub(super) fn status_summary_lines(status: &TuiStatusSnapshot) -> Text<'static> {
+    let receiver_mode = if status.receiver_mode.contains("on-demand") {
+        "on-demand"
+    } else {
+        "standalone"
+    };
 
-        Text::from(vec![
-            status_summary_line(vec![
-                ("Local AE", self.local_ae_title.clone()),
-                ("Listener", self.listener_addr.clone()),
-                ("Mode", receiver_mode.to_string()),
-            ]),
-            status_summary_line(vec![
-                ("PDU", self.max_pdu_length.to_string()),
-                (
-                    "Strict",
-                    if self.strict_pdu { "y" } else { "n" }.to_string(),
-                ),
-                (
-                    "Promiscuous",
-                    if self.allow_promiscuous_storage {
-                        "y"
-                    } else {
-                        "n"
-                    }
-                    .to_string(),
-                ),
-                ("TS Pref", self.preferred_store_transfer_syntax.clone()),
-            ]),
-            status_summary_line(vec![
-                ("Config", truncate_path(&self.config_path, 28)),
-                ("Data", truncate_path(&self.data_dir, 28)),
-            ]),
-        ])
-    }
+    Text::from(vec![
+        status_summary_line(vec![
+            ("Local AE", status.local_ae_title.clone()),
+            ("Listener", status.listener_addr.clone()),
+            ("Mode", receiver_mode.to_string()),
+        ]),
+        status_summary_line(vec![
+            ("PDU", status.max_pdu_length.to_string()),
+            (
+                "Strict",
+                if status.strict_pdu { "y" } else { "n" }.to_string(),
+            ),
+            (
+                "Promiscuous",
+                if status.allow_promiscuous_storage {
+                    "y"
+                } else {
+                    "n"
+                }
+                .to_string(),
+            ),
+            ("TS Pref", status.preferred_store_transfer_syntax.clone()),
+        ]),
+        status_summary_line(vec![
+            ("Config", truncate_path(&status.config_path, 28)),
+            ("Data", truncate_path(&status.data_dir, 28)),
+        ]),
+    ])
 }
 
 fn status_summary_line(fields: Vec<(&str, String)>) -> Line<'static> {

@@ -47,7 +47,7 @@ fn formatting_helpers_compact_rows_and_status_lines() {
 
     let services = test_services();
     let status = services.tui_status_snapshot(TuiReceiverMode::OnDemandForLocalRetrieve);
-    let summary = status.summary_lines();
+    let summary = status_summary_lines(&status);
 
     assert_eq!(summary.lines.len(), 3);
 

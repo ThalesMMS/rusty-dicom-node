@@ -171,12 +171,12 @@ fn copy_across_devices(source: &Path, destination: &Path) -> Result<()> {
 fn is_cross_device_rename_error(error: &io::Error) -> bool {
     #[cfg(unix)]
     {
-        return error.raw_os_error() == Some(18);
+        error.raw_os_error() == Some(18)
     }
 
     #[cfg(windows)]
     {
-        return error.raw_os_error() == Some(17);
+        error.raw_os_error() == Some(17)
     }
 
     #[cfg(not(any(unix, windows)))]

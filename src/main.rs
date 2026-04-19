@@ -1,26 +1,16 @@
-mod aliases;
-mod cli;
-mod config;
-mod db;
-mod dicom;
-mod error;
-mod importer;
-mod models;
-mod net;
-mod services;
-mod tui;
-
 use std::path::Path;
 
 use clap::Parser;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-use crate::{
+pub use dicom_node_client::{aliases, config, db, dicom, error, importer, models, net, services};
+use dicom_node_client::{
     cli::{Cli, Commands, LocalCommand, NodeCommand, SendCommand},
     config::AppPaths,
     models::{MoveRequest, QueryCriteria},
     services::{AppServices, NodeDraftValues, NodePatchCliValues},
 };
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+mod tui;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -222,7 +212,7 @@ fn init_tracing(logs_dir: &Path) -> anyhow::Result<tracing_appender::non_blockin
     Ok(guard)
 }
 
-fn print_import_report(report: &crate::models::ImportReport) {
+fn print_import_report(report: &dicom_node_client::models::ImportReport) {
     println!(
         "Import complete\n  scanned={}\n  accepted={}\n  duplicates={}\n  unreadable={}\n  invalid_dicom={}\n  rejected_total={}\n  stored_bytes={}",
         report.scanned_files,
@@ -249,7 +239,7 @@ fn print_import_report(report: &crate::models::ImportReport) {
     }
 }
 
-fn print_send_outcome(outcome: &crate::models::SendOutcome) {
+fn print_send_outcome(outcome: &dicom_node_client::models::SendOutcome) {
     println!(
         "attempted={}\nsent={}\nfailed={}",
         outcome.attempted, outcome.sent, outcome.failed
