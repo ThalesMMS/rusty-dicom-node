@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{self, BufWriter, Write},
     net::{TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -17,6 +18,7 @@ use dicom_ul::{
     pdu::{PDataValue, PDataValueType},
     Pdu,
 };
+use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
 use crate::{
@@ -195,6 +197,7 @@ impl StorageScpServer {
 
         let mut command_buffer = Vec::new();
         let mut dataset_buffer = Vec::new();
+        let mut accumulated_bytes: u64 = 0;
         let mut current_store: Option<CurrentStoreCommand> = None;
 
         loop {
@@ -259,6 +262,8 @@ impl StorageScpServer {
                                                 presentation_context_id: value
                                                     .presentation_context_id,
                                             });
+                                            dataset_buffer.clear();
+                                            accumulated_bytes = 0;
                                         }
                                         other => {
                                             warn!("unsupported DIMSE command 0x{other:04X}");
@@ -267,14 +272,45 @@ impl StorageScpServer {
                                 }
                             }
                             PDataValueType::Data => {
+                                let projected_bytes =
+                                    accumulated_bytes.saturating_add(value.data.len() as u64);
+                                let max_store_object_bytes = self.config.max_store_object_bytes;
+
+                                if let Some(max_store_object_bytes) = max_store_object_bytes {
+                                    if projected_bytes > max_store_object_bytes {
+                                        warn!(
+                                            "incoming C-STORE dataset exceeded configured limit: {projected_bytes} > {max_store_object_bytes} bytes"
+                                        );
+                                        if let Some(store_command) = current_store.take() {
+                                            received.fetch_add(1, Ordering::Relaxed);
+                                            failed.fetch_add(1, Ordering::Relaxed);
+                                            error!(
+                                                accumulated_bytes,
+                                                projected_bytes,
+                                                max_store_object_bytes,
+                                                "failed to persist incoming object: C-STORE dataset exceeded configured size limit"
+                                            );
+                                            send_store_response(
+                                                &mut association,
+                                                &store_command,
+                                                0xA700,
+                                            )?;
+                                        }
+                                        dataset_buffer.clear();
+                                        return Ok(());
+                                    }
+                                }
+
+                                accumulated_bytes = projected_bytes;
                                 dataset_buffer.extend_from_slice(&value.data);
+
                                 if value.is_last {
                                     if let Some(store_command) = current_store.take() {
                                         received.fetch_add(1, Ordering::Relaxed);
                                         let status = match self.persist_store(
                                             &association,
                                             &store_command,
-                                            dataset_buffer.clone(),
+                                            &dataset_buffer,
                                         ) {
                                             Ok(()) => {
                                                 stored.fetch_add(1, Ordering::Relaxed);
@@ -290,26 +326,16 @@ impl StorageScpServer {
                                         };
 
                                         dataset_buffer.clear();
+                                        accumulated_bytes = 0;
 
-                                        let response = create_store_response(
-                                            store_command.message_id,
-                                            &store_command.sop_class_uid,
-                                            &store_command.sop_instance_uid,
+                                        send_store_response(
+                                            &mut association,
+                                            &store_command,
                                             status,
-                                        );
-                                        let response_bytes =
-                                            AssociationFactory::write_command_dataset(&response)?;
-                                        association.send(&Pdu::PData {
-                                            data: vec![PDataValue {
-                                                presentation_context_id: store_command
-                                                    .presentation_context_id,
-                                                value_type: PDataValueType::Command,
-                                                is_last: true,
-                                                data: response_bytes,
-                                            }],
-                                        })?;
+                                        )?;
                                     } else {
                                         dataset_buffer.clear();
+                                        accumulated_bytes = 0;
                                     }
                                 }
                             }
@@ -343,7 +369,7 @@ impl StorageScpServer {
         &self,
         association: &dicom_ul::association::ServerAssociation<TcpStream>,
         store_command: &CurrentStoreCommand,
-        dataset_bytes: Vec<u8>,
+        dataset_bytes: &[u8],
     ) -> Result<()> {
         let context = association
             .presentation_contexts()
@@ -355,7 +381,7 @@ impl StorageScpServer {
             .get(&context.transfer_syntax)
             .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
 
-        let obj = DefaultMemObject::read_dataset_with_ts(dataset_bytes.as_slice(), transfer_syntax)
+        let obj = DefaultMemObject::read_dataset_with_ts(dataset_bytes, transfer_syntax)
             .context("reading incoming C-STORE dataset")?;
 
         let study_uid = obj
@@ -388,18 +414,17 @@ impl StorageScpServer {
             .context("building file meta table")?;
 
         let file_obj = obj.with_exact_meta(meta);
+        let file = fs::File::create(&managed_path)
+            .with_context(|| format!("creating {}", managed_path.display()))?;
+        let writer = BufWriter::new(file);
+        let mut hashing_writer = HashingWriter::new(writer);
         file_obj
-            .write_to_file(&managed_path)
+            .write_all(&mut hashing_writer)
             .with_context(|| format!("writing {}", managed_path.display()))?;
-
-        let file_bytes = fs::read(&managed_path)
-            .with_context(|| format!("reading {}", managed_path.display()))?;
-        let sha256 = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(&file_bytes);
-            format!("{:x}", hasher.finalize())
-        };
+        hashing_writer
+            .flush()
+            .with_context(|| format!("flushing {}", managed_path.display()))?;
+        let (sha256, file_size_bytes) = hashing_writer.finalize();
 
         let indexed_obj = OpenFileOptions::new()
             .read_until(tags::PIXEL_DATA)
@@ -415,12 +440,70 @@ impl StorageScpServer {
             ),
             &managed_path,
             sha256,
-            file_bytes.len() as u64,
+            file_size_bytes,
             Some(now_utc_string()),
         )?;
 
         self.db.upsert_instance(&instance)?;
         Ok(())
+    }
+}
+
+fn send_store_response(
+    association: &mut dicom_ul::association::ServerAssociation<TcpStream>,
+    store_command: &CurrentStoreCommand,
+    status: u16,
+) -> Result<()> {
+    let response = create_store_response(
+        store_command.message_id,
+        &store_command.sop_class_uid,
+        &store_command.sop_instance_uid,
+        status,
+    );
+    let response_bytes = AssociationFactory::write_command_dataset(&response)?;
+    association.send(&Pdu::PData {
+        data: vec![PDataValue {
+            presentation_context_id: store_command.presentation_context_id,
+            value_type: PDataValueType::Command,
+            is_last: true,
+            data: response_bytes,
+        }],
+    })?;
+    Ok(())
+}
+
+struct HashingWriter<W> {
+    inner: W,
+    hasher: Sha256,
+    bytes_written: u64,
+}
+
+impl<W> HashingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            bytes_written: 0,
+        }
+    }
+}
+
+impl<W: Write> HashingWriter<W> {
+    fn finalize(self) -> (String, u64) {
+        (format!("{:x}", self.hasher.finalize()), self.bytes_written)
+    }
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let bytes_written = self.inner.write(buf)?;
+        self.hasher.update(&buf[..bytes_written]);
+        self.bytes_written = self.bytes_written.saturating_add(bytes_written as u64);
+        Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 

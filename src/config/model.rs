@@ -16,12 +16,14 @@ pub const DEFAULT_MAX_ZIP_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ZIP_TOTAL_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ZIP_ENTRY_COUNT: usize = 100_000;
 pub const DEFAULT_MAX_FILE_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const BACKFILL_CONFIG_KEYS: [&str; 5] = [
+pub const DEFAULT_MAX_STORE_OBJECT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const BACKFILL_CONFIG_KEYS: [&str; 6] = [
     "preferred_store_transfer_syntax",
     "max_zip_entry_bytes",
     "max_zip_total_bytes",
     "max_zip_entry_count",
     "max_file_import_bytes",
+    "max_store_object_bytes",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -82,6 +84,8 @@ pub struct AppConfig {
     pub max_zip_entry_count: Option<usize>,
     #[serde(default = "default_max_file_import_bytes")]
     pub max_file_import_bytes: Option<u64>,
+    #[serde(default = "default_max_store_object_bytes")]
+    pub max_store_object_bytes: Option<u64>,
 }
 
 impl Default for AppConfig {
@@ -98,6 +102,7 @@ impl Default for AppConfig {
             max_zip_total_bytes: default_max_zip_total_bytes(),
             max_zip_entry_count: default_max_zip_entry_count(),
             max_file_import_bytes: default_max_file_import_bytes(),
+            max_store_object_bytes: default_max_store_object_bytes(),
         }
     }
 }
@@ -116,6 +121,10 @@ fn default_max_zip_entry_count() -> Option<usize> {
 
 fn default_max_file_import_bytes() -> Option<u64> {
     Some(DEFAULT_MAX_FILE_IMPORT_BYTES)
+}
+
+fn default_max_store_object_bytes() -> Option<u64> {
+    Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
 }
 
 impl AppConfig {
@@ -166,8 +175,8 @@ pub fn now_utc_string() -> String {
 mod tests {
     use super::{
         AppConfig, StoreTransferSyntaxPreference, DEFAULT_MAX_FILE_IMPORT_BYTES,
-        DEFAULT_MAX_ZIP_ENTRY_BYTES, DEFAULT_MAX_ZIP_ENTRY_COUNT, DEFAULT_MAX_ZIP_TOTAL_BYTES,
-        LEGACY_DEFAULT_MAX_PDU_LENGTH, RECOMMENDED_MAX_PDU_LENGTH,
+        DEFAULT_MAX_STORE_OBJECT_BYTES, DEFAULT_MAX_ZIP_ENTRY_BYTES, DEFAULT_MAX_ZIP_ENTRY_COUNT,
+        DEFAULT_MAX_ZIP_TOTAL_BYTES, LEGACY_DEFAULT_MAX_PDU_LENGTH, RECOMMENDED_MAX_PDU_LENGTH,
     };
     use crate::config::AppPaths;
     use std::fs;
@@ -210,6 +219,10 @@ mod tests {
             AppConfig::default().max_file_import_bytes,
             Some(DEFAULT_MAX_FILE_IMPORT_BYTES)
         );
+        assert_eq!(
+            AppConfig::default().max_store_object_bytes,
+            Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
+        );
     }
 
     #[test]
@@ -248,6 +261,10 @@ mod tests {
             cfg.max_file_import_bytes,
             Some(DEFAULT_MAX_FILE_IMPORT_BYTES)
         );
+        assert_eq!(
+            cfg.max_store_object_bytes,
+            Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
+        );
 
         let saved = fs::read_to_string(&paths.config_json).expect("read migrated config");
         assert!(saved.contains(&RECOMMENDED_MAX_PDU_LENGTH.to_string()));
@@ -256,6 +273,7 @@ mod tests {
         assert!(saved.contains("\"max_zip_total_bytes\": 53687091200"));
         assert!(saved.contains("\"max_zip_entry_count\": 100000"));
         assert!(saved.contains("\"max_file_import_bytes\": 2147483648"));
+        assert!(saved.contains("\"max_store_object_bytes\": 2147483648"));
     }
 
     #[test]
@@ -290,6 +308,10 @@ mod tests {
             cfg.max_file_import_bytes,
             Some(DEFAULT_MAX_FILE_IMPORT_BYTES)
         );
+        assert_eq!(
+            cfg.max_store_object_bytes,
+            Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
+        );
 
         let saved = fs::read_to_string(&paths.config_json).expect("read backfilled config");
         assert!(saved.contains("\"preferred_store_transfer_syntax\": \"jpeg2000_lossless\""));
@@ -297,6 +319,7 @@ mod tests {
         assert!(saved.contains("\"max_zip_total_bytes\": 53687091200"));
         assert!(saved.contains("\"max_zip_entry_count\": 100000"));
         assert!(saved.contains("\"max_file_import_bytes\": 2147483648"));
+        assert!(saved.contains("\"max_store_object_bytes\": 2147483648"));
     }
 
     #[test]
@@ -319,7 +342,8 @@ mod tests {
                 "    \"max_zip_entry_bytes\": true,\n",
                 "    \"max_zip_total_bytes\": true,\n",
                 "    \"max_zip_entry_count\": true,\n",
-                "    \"max_file_import_bytes\": true\n",
+                "    \"max_file_import_bytes\": true,\n",
+                "    \"max_store_object_bytes\": true\n",
                 "  }\n",
                 "}\n"
             ),
@@ -333,6 +357,10 @@ mod tests {
             StoreTransferSyntaxPreference::Jpeg2000Lossless
         );
         assert_eq!(cfg.max_zip_entry_bytes, Some(DEFAULT_MAX_ZIP_ENTRY_BYTES));
+        assert_eq!(
+            cfg.max_store_object_bytes,
+            Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
+        );
 
         let saved = fs::read_to_string(&paths.config_json).expect("read backfilled config");
         assert!(saved.contains("\"preferred_store_transfer_syntax\": \"jpeg2000_lossless\""));
@@ -340,6 +368,7 @@ mod tests {
         assert!(saved.contains("\"max_zip_total_bytes\": 53687091200"));
         assert!(saved.contains("\"max_zip_entry_count\": 100000"));
         assert!(saved.contains("\"max_file_import_bytes\": 2147483648"));
+        assert!(saved.contains("\"max_store_object_bytes\": 2147483648"));
     }
 
     #[test]
@@ -361,7 +390,8 @@ mod tests {
                 "  \"max_zip_entry_bytes\": null,\n",
                 "  \"max_zip_total_bytes\": null,\n",
                 "  \"max_zip_entry_count\": null,\n",
-                "  \"max_file_import_bytes\": null\n",
+                "  \"max_file_import_bytes\": null,\n",
+                "  \"max_store_object_bytes\": null\n",
                 "}\n"
             ),
         )
@@ -373,11 +403,13 @@ mod tests {
         assert_eq!(cfg.max_zip_total_bytes, None);
         assert_eq!(cfg.max_zip_entry_count, None);
         assert_eq!(cfg.max_file_import_bytes, None);
+        assert_eq!(cfg.max_store_object_bytes, None);
 
         let saved = fs::read_to_string(&paths.config_json).expect("read config after load");
         assert!(saved.contains("\"max_zip_entry_bytes\": null"));
         assert!(saved.contains("\"max_zip_total_bytes\": null"));
         assert!(saved.contains("\"max_zip_entry_count\": null"));
         assert!(saved.contains("\"max_file_import_bytes\": null"));
+        assert!(saved.contains("\"max_store_object_bytes\": null"));
     }
 }

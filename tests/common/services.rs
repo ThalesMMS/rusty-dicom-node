@@ -14,6 +14,10 @@ pub struct TestServices {
 
 impl TestServices {
     pub fn new() -> anyhow::Result<Self> {
+        Self::new_with_config(|_| {})
+    }
+
+    pub fn new_with_config(configure: impl FnOnce(&mut AppConfig)) -> anyhow::Result<Self> {
         let temp_dir = tempdir()?;
         let base_dir = temp_dir.path().join("app");
         let paths = AppPaths {
@@ -25,13 +29,14 @@ impl TestServices {
         };
         paths.ensure()?;
 
-        let config = AppConfig {
+        let mut config = AppConfig {
             local_ae_title: "LOCALTEST".to_string(),
             storage_bind_addr: "127.0.0.1".to_string(),
             storage_scp_port: 0,
             preferred_store_transfer_syntax: StoreTransferSyntaxPreference::ExplicitVrLittleEndian,
             ..AppConfig::default()
         };
+        configure(&mut config);
         config.save(&paths)?;
 
         let services = AppServices::load_from_paths(paths)?;
