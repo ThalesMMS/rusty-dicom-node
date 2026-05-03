@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -21,6 +22,7 @@ pub(super) fn stage_reader_with_sha256<R: Read>(
     staging_dir: &Path,
     file_name_hint: &Path,
     max_file_import_bytes: Option<u64>,
+    cancel_flag: Option<&AtomicBool>,
 ) -> Result<(PathBuf, String, u64)> {
     let staged_path = staged_copy_path(staging_dir, file_name_hint);
     let mut staged_file = fs::File::create(&staged_path)
@@ -31,6 +33,7 @@ pub(super) fn stage_reader_with_sha256<R: Read>(
     let mut buffer = [0_u8; 64 * 1024];
     let result = (|| -> Result<(String, u64)> {
         loop {
+            crate::cancel::ensure_not_cancelled(cancel_flag)?;
             let bytes_read = reader
                 .read(&mut buffer)
                 .with_context(|| format!("reading source for {}", staged_path.display()))?;
@@ -45,11 +48,13 @@ pub(super) fn stage_reader_with_sha256<R: Read>(
                     ));
                 }
             }
+            crate::cancel::ensure_not_cancelled(cancel_flag)?;
             hasher.update(&buffer[..bytes_read]);
             staged_file
                 .write_all(&buffer[..bytes_read])
                 .with_context(|| format!("writing {}", staged_path.display()))?;
             copied_bytes = projected_bytes;
+            crate::cancel::ensure_not_cancelled(cancel_flag)?;
         }
 
         staged_file
@@ -230,6 +235,10 @@ mod tests {
         fs, io,
         io::Read,
         path::{Path, PathBuf},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
     };
 
     use tempfile::tempdir;
@@ -260,6 +269,33 @@ mod tests {
             buf[..bytes_to_copy].copy_from_slice(&self.chunk[..bytes_to_copy]);
             self.delivered_chunk = true;
             Ok(bytes_to_copy)
+        }
+    }
+
+    struct CancelAfterFirstChunkReader {
+        flag: Arc<AtomicBool>,
+        delivered_chunk: bool,
+    }
+
+    impl CancelAfterFirstChunkReader {
+        fn new(flag: Arc<AtomicBool>) -> Self {
+            Self {
+                flag,
+                delivered_chunk: false,
+            }
+        }
+    }
+
+    impl Read for CancelAfterFirstChunkReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.delivered_chunk {
+                return Ok(0);
+            }
+
+            buf[..4].copy_from_slice(b"abcd");
+            self.delivered_chunk = true;
+            self.flag.store(true, Ordering::Release);
+            Ok(4)
         }
     }
 
@@ -349,6 +385,7 @@ mod tests {
             &staging_dir,
             Path::new("input.dcm"),
             None,
+            None,
         )
         .unwrap_err();
 
@@ -371,6 +408,7 @@ mod tests {
             &staging_dir,
             Path::new("input.dcm"),
             Some(3),
+            None,
         )
         .unwrap_err();
 
@@ -379,6 +417,30 @@ mod tests {
         assert!(
             remaining_tmp_files.is_empty(),
             "expected no staged files after size-limit failure, found {remaining_tmp_files:?}"
+        );
+    }
+
+    #[test]
+    fn stage_reader_with_sha256_removes_partial_file_on_cancellation() {
+        let root = tempdir().expect("create temp dir");
+        let staging_dir = root.path().join("staging");
+        fs::create_dir_all(&staging_dir).expect("create staging dir");
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
+        let error = stage_reader_with_sha256(
+            CancelAfterFirstChunkReader::new(Arc::clone(&cancel_flag)),
+            &staging_dir,
+            Path::new("input.dcm"),
+            None,
+            Some(&cancel_flag),
+        )
+        .unwrap_err();
+
+        assert!(crate::cancel::is_cancelled_error(&error));
+        let remaining_tmp_files = staged_files(&staging_dir);
+        assert!(
+            remaining_tmp_files.is_empty(),
+            "expected no staged files after cancellation, found {remaining_tmp_files:?}"
         );
     }
 }

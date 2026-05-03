@@ -2,6 +2,8 @@ use super::*;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::models::LocalInstance;
+
 /// Produce a trimmed string slice when the input contains non-whitespace characters.
 ///
 /// Trims surrounding whitespace from the provided `&str` and yields `Some(&str)` if the
@@ -57,16 +59,21 @@ pub(in crate::tui) fn display_optional_detail(value: Option<&str>, fallback: &st
 /// assert!(text.iter().next().is_some());
 /// ```
 pub(in crate::tui) fn help_text(view: &TuiView) -> Text<'static> {
-    let enter_line = match (view.focus, view.local_drill_down) {
-        (FocusPane::Local, true) => "  Enter       No Local-pane action in series view",
-        (FocusPane::Local, false) => {
+    let enter_line = match (view.focus, view.local_drill_down, view.local_instance_drill_down) {
+        (FocusPane::Local, _, true) => "  Enter       No Local-pane action in instance view",
+        (FocusPane::Local, true, false) => {
+            "  Enter       Open instances for the selected local series, or run the command input / submit the active modal"
+        }
+        (FocusPane::Local, false, false) => {
             "  Enter       Open series for the selected local study, or run the command input / submit the active modal"
         }
         _ => {
             "  Enter       Run the command input, submit the active modal, or open series from Local Studies"
         }
     };
-    let esc_line = if view.focus == FocusPane::Local && view.local_drill_down {
+    let esc_line = if view.focus == FocusPane::Local && view.local_instance_drill_down {
+        "  Esc         Return from Local instances to series, close help/modal, or return focus to command input"
+    } else if view.focus == FocusPane::Local && view.local_drill_down {
         "  Esc         Return from Local series to studies, close help/modal, or return focus to command input"
     } else {
         "  Esc         Close help/modal, return from Local series, or return focus to command input"
@@ -80,9 +87,11 @@ pub(in crate::tui) fn help_text(view: &TuiView) -> Text<'static> {
         Line::from("  r           Refresh panes when focus is not in command input"),
         Line::from("  a/e/d/f     Add, edit, delete, or query from the selected node"),
         Line::from("  m           Retrieve from the selected query result"),
+        Line::from("  i/s         Import local files or send selected study/series"),
+        Line::from("  c           Edit Storage SCP settings (when focus is on Config pane)"),
         Line::from(enter_line),
         Line::from(esc_line),
-        Line::from("  q           Quit when focus is not in command input"),
+        Line::from("  q           Quit when no modal is active and focus is not in command input"),
         Line::from(""),
         Line::from("Common commands"),
         Line::from("  Canonical names match CLI flags without '--', using underscores."),
@@ -129,23 +138,49 @@ pub(in crate::tui) fn help_text(view: &TuiView) -> Text<'static> {
 /// The composed footer status line as an owned `String`.
 ///
 pub(in crate::tui) fn footer_status_text(view: &TuiView) -> String {
+    let queued_count = view
+        .queued_tasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Queued)
+        .count();
+
     if let Some(task) = view.running_task.as_ref() {
-        return running_task_status_line(task);
+        let mut text = running_task_status_line(task);
+        if queued_count > 0 {
+            text.push_str(&format!(" | {queued_count} queued"));
+        }
+        return text;
     }
 
-    let mut parts = vec!["F1/? help", "Tab panes", "r refresh"];
+    let mut parts: Vec<String> = vec![
+        "F1/? help".to_string(),
+        "Tab panes".to_string(),
+        "r refresh".to_string(),
+    ];
+
+    if queued_count > 0 {
+        parts.push(format!("{queued_count} queued"));
+    }
 
     match view.focus {
-        FocusPane::Nodes => parts.push("a/e/d/f nodes"),
-        FocusPane::Query => parts.push("m retrieve"),
-        FocusPane::Local if view.local_drill_down => parts.push("Esc back to studies"),
-        FocusPane::Local => parts.push("Enter series"),
-        FocusPane::Input => parts.push("Enter run command"),
+        FocusPane::Nodes => parts.push("a/e/d/f nodes".to_string()),
+        FocusPane::Query => parts.push("m retrieve".to_string()),
+        FocusPane::Local if view.local_instance_drill_down => {
+            parts.push("Esc back to series".to_string())
+        }
+        FocusPane::Local if view.local_drill_down => parts.push("Esc back to studies".to_string()),
+        FocusPane::Local => parts.push("Enter series".to_string()),
+        FocusPane::Config => parts.push("c edit config".to_string()),
+        FocusPane::Input => parts.push("Enter run command".to_string()),
         FocusPane::Logs => {}
+        FocusPane::Tasks => {
+            parts.push("Enter inspect".to_string());
+            parts.push("t queued/history".to_string());
+        }
     }
 
     if view.focus != FocusPane::Input {
-        parts.push("q quit");
+        parts.push("q quit".to_string());
     }
     parts.join(" | ")
 }
@@ -204,6 +239,14 @@ pub(in crate::tui) fn local_series_empty_text() -> Text<'static> {
     ])
 }
 
+pub(in crate::tui) fn local_instances_empty_text() -> Text<'static> {
+    Text::from(vec![
+        Line::from("No indexed instances are available for this series."),
+        Line::from(""),
+        Line::from("Press Esc to return to series."),
+    ])
+}
+
 /// Generates the help text shown when there are no query results.
 ///
 /// The first line indicates the last query target when available, otherwise notes that no
@@ -256,6 +299,28 @@ pub(in crate::tui) fn active_block_style(active: bool) -> Style {
     }
 }
 
+pub(in crate::tui) fn config_pane_text(view: &TuiView) -> Text<'static> {
+    Text::from(vec![
+        Line::from(format!("AE title: {}", view.status.local_ae_title)),
+        Line::from(format!("Listener: {}", view.status.listener_addr)),
+        Line::from(format!(
+            "strict_pdu: {}",
+            bool_label(view.status.strict_pdu)
+        )),
+        Line::from(format!(
+            "allow_promiscuous_storage: {}",
+            bool_label(view.status.allow_promiscuous_storage)
+        )),
+        Line::from(format!("max_pdu_length: {}", view.status.max_pdu_length)),
+        Line::from(format!(
+            "TS preference: {}",
+            view.status.preferred_store_transfer_syntax
+        )),
+        Line::from(""),
+        Line::from("Press Tab to focus this pane, then press 'c' to edit."),
+    ])
+}
+
 /// Truncates a string to a maximum display-cell width by keeping the tail and
 /// prefixing an ellipsis when truncation is required.
 ///
@@ -275,19 +340,49 @@ pub(in crate::tui) fn active_block_style(active: bool) -> Style {
 /// assert_eq!(truncate_tail("日本語テキスト", 5), "...ト");
 /// assert_eq!(truncate_tail("abc", 2), "..");
 /// ```
+#[allow(
+    dead_code,
+    reason = "kept for callers that require ASCII ellipsis; current layout uses the configurable form"
+)]
 pub(in crate::tui) fn truncate_tail(value: &str, max_len: usize) -> String {
+    truncate_tail_with_ellipsis(value, max_len, "...")
+}
+
+/// Like [`truncate_tail`] but allows customizing the ellipsis string.
+///
+/// This is useful when table-like layouts want a single-cell ellipsis (`"…"`) to
+/// preserve more of the suffix content.
+pub(in crate::tui) fn truncate_tail_with_ellipsis(
+    value: &str,
+    max_len: usize,
+    ellipsis: &str,
+) -> String {
     let value = value.trim();
+
+    if max_len == 0 {
+        return String::new();
+    }
+
     if UnicodeWidthStr::width(value) <= max_len {
         return value.to_string();
     }
 
+    let ellipsis_width = UnicodeWidthStr::width(ellipsis);
+
+    // Keep existing truncate_tail behavior for very small widths: show dot-runs
+    // up to 3 cells.
     if max_len <= 3 {
         return ".".repeat(max_len);
     }
 
-    let suffix_len = max_len - 3;
+    // If the requested ellipsis itself can't fit, fall back to dot-runs.
+    if max_len <= ellipsis_width {
+        return ".".repeat(max_len);
+    }
+
+    let suffix_len = max_len - ellipsis_width;
     let suffix = suffix_by_display_width(value, suffix_len);
-    format!("...{suffix}")
+    format!("{ellipsis}{suffix}")
 }
 
 /// Truncates a UID to at most `max_len` display cells, preserving the end of the UID and
@@ -307,7 +402,9 @@ pub(in crate::tui) fn truncate_tail(value: &str, max_len: usize) -> String {
 /// assert_eq!(truncate_uid("abcdef", 3), "...");
 /// ```
 pub(in crate::tui) fn truncate_uid(uid: &str, max_len: usize) -> String {
-    truncate_tail(uid, max_len)
+    // UIDs benefit from keeping the suffix, so use a single-cell ellipsis to
+    // retain a bit more of the tail in tight columns.
+    truncate_tail_with_ellipsis(uid, max_len, "…")
 }
 
 /// Truncates a path-like string to at most `max_len` display cells, preserving the tail and
@@ -328,7 +425,7 @@ pub(in crate::tui) fn truncate_uid(uid: &str, max_len: usize) -> String {
 /// assert_eq!(truncate_path("  short  ", 6), "short");
 /// ```
 pub(in crate::tui) fn truncate_path(path: &str, max_len: usize) -> String {
-    truncate_tail(path, max_len)
+    truncate_tail_with_ellipsis(path, max_len, "…")
 }
 
 /// Produce a fixed-width string by trimming the input and then truncating or padding it
@@ -537,6 +634,19 @@ pub(in crate::tui) fn format_series_row(series: &SeriesSummary) -> String {
         pad_or_truncate(modality, 8),
         series.instance_count,
         pad_or_truncate(description, 28),
+    )
+}
+
+pub(in crate::tui) fn format_instance_row(instance: &LocalInstance) -> String {
+    let modality = non_empty_text(instance.modality.as_deref()).unwrap_or("-");
+    let instance_number = non_empty_text(instance.instance_number.as_deref()).unwrap_or("-");
+    let description = non_empty_text(instance.series_description.as_deref()).unwrap_or("-");
+
+    format!(
+        "{} | {} | {}",
+        pad_or_truncate(modality, 8),
+        pad_or_truncate(instance_number, 8),
+        pad_or_truncate(description, 40),
     )
 }
 

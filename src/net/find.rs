@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+
 use anyhow::{anyhow, Context};
 use dicom_dictionary_std::tags;
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
@@ -5,6 +7,7 @@ use dicom_ul::pdu::{PDataValue, PDataValueType, Pdu};
 use tracing::warn;
 
 use crate::{
+    cancel,
     dicom::{build_find_identifier, query_match_from_response, DefaultMemObject},
     error::Result,
     models::{QueryCriteria, QueryMatch, RemoteNode},
@@ -25,10 +28,30 @@ impl FindScu {
     }
 
     pub fn query(&self, node: &RemoteNode, criteria: &QueryCriteria) -> Result<Vec<QueryMatch>> {
+        self.query_with_cancel(node, criteria, None)
+    }
+
+    pub fn query_cancellable(
+        &self,
+        node: &RemoteNode,
+        criteria: &QueryCriteria,
+        cancel_flag: &AtomicBool,
+    ) -> Result<Vec<QueryMatch>> {
+        self.query_with_cancel(node, criteria, Some(cancel_flag))
+    }
+
+    fn query_with_cancel(
+        &self,
+        node: &RemoteNode,
+        criteria: &QueryCriteria,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<Vec<QueryMatch>> {
+        cancel::ensure_not_cancelled(cancel_flag)?;
         let mut association = self
             .association_factory
             .establish_with_abstract_syntaxes(node, [criteria.model.find_sop_class_uid()])?;
 
+        cancel::ensure_not_cancelled(cancel_flag)?;
         let context = self.association_factory.first_context(&association)?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
@@ -56,6 +79,7 @@ impl FindScu {
         let mut command_accumulator = PDataAccumulator::new();
 
         loop {
+            cancel::ensure_not_cancelled(cancel_flag)?;
             match association.receive()? {
                 Pdu::PData { data } => {
                     if data.is_empty() {
@@ -81,12 +105,14 @@ impl FindScu {
                             let mut dataset_bytes = response.dataset_bytes;
 
                             if dataset_bytes.is_empty() || response.needs_dataset_fallback {
+                                cancel::ensure_not_cancelled(cancel_flag)?;
                                 let bytes = AssociationFactory::read_single_pdata_dataset(
                                     &mut association,
                                 )?;
                                 dataset_bytes.extend_from_slice(&bytes);
                             }
 
+                            cancel::ensure_not_cancelled(cancel_flag)?;
                             let response_obj =
                                 crate::dicom::DefaultMemObject::read_dataset_with_ts(
                                     dataset_bytes.as_slice(),

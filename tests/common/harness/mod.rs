@@ -29,6 +29,7 @@ struct IncomingDimse {
     command: DefaultMemObject,
     dataset_bytes: Vec<u8>,
     presentation_context_id: u8,
+    dataset_pdv_count: usize,
 }
 
 fn bind_test_listener(port: u16) -> anyhow::Result<TcpListener> {
@@ -73,6 +74,7 @@ fn next_dimse_message(association: &mut TestAssociation) -> anyhow::Result<Optio
     let mut command_accumulator = PDataAccumulator::new();
     let mut dataset_accumulator = PDataAccumulator::new();
     let mut command: Option<(DefaultMemObject, u8)> = None;
+    let mut dataset_pdv_count: usize = 0;
 
     loop {
         match association.receive()? {
@@ -81,6 +83,7 @@ fn next_dimse_message(association: &mut TestAssociation) -> anyhow::Result<Optio
                     match value.value_type {
                         PDataValueType::Command => {
                             let presentation_context_id = value.presentation_context_id;
+                            dataset_pdv_count = 0;
                             command_accumulator.feed(&value)?;
                             if command_accumulator.is_complete() {
                                 let command_obj = command_accumulator
@@ -90,6 +93,7 @@ fn next_dimse_message(association: &mut TestAssociation) -> anyhow::Result<Optio
                             }
                         }
                         PDataValueType::Data => {
+                            dataset_pdv_count += 1;
                             dataset_accumulator.feed(&value)?;
                         }
                     }
@@ -105,6 +109,7 @@ fn next_dimse_message(association: &mut TestAssociation) -> anyhow::Result<Optio
                             command,
                             dataset_bytes: Vec::new(),
                             presentation_context_id,
+                            dataset_pdv_count: 0,
                         }));
                     }
                     if dataset_accumulator.is_complete() {
@@ -114,6 +119,7 @@ fn next_dimse_message(association: &mut TestAssociation) -> anyhow::Result<Optio
                             command,
                             dataset_bytes,
                             presentation_context_id,
+                            dataset_pdv_count,
                         }));
                     }
                 }

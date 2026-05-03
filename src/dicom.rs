@@ -23,7 +23,6 @@ pub fn get_str_opt(file_obj: &DefaultFileObject, tag: Tag) -> Option<String> {
         .map(clean_dicom_str)
         .filter(|s| !s.is_empty())
 }
-
 pub fn get_str_opt_from_mem(obj: &DefaultMemObject, tag: Tag) -> Option<String> {
     obj.element(tag)
         .ok()
@@ -285,6 +284,40 @@ pub fn inspect_file_identity(file_obj: &DefaultFileObject) -> Result<(String, St
     Ok((sop_class_uid, sop_instance_uid, transfer_syntax_uid))
 }
 
+/// Open a DICOM file and extract only the identifiers required for networking (Store SCU),
+/// without reading/decoding Pixel Data.
+///
+/// This uses `read_until(PixelData)` to stop parsing before the potentially-large pixel payload.
+pub fn probe_file_identity(path: &std::path::Path) -> Result<(String, String, String)> {
+    let file_obj: DefaultFileObject = dicom_object::OpenFileOptions::new()
+        .read_until(dicom_dictionary_std::tags::PIXEL_DATA)
+        .open_file(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+
+    inspect_file_identity(&file_obj)
+}
+
+/// Like [`probe_file_identity`], but reads from a stream instead of a file path.
+///
+/// This is intended for tests where we want to ensure probing does not need to
+/// consume an entire input stream.
+#[cfg(test)]
+pub fn probe_reader_identity<R>(mut reader: R) -> Result<(String, String, String)>
+where
+    R: std::io::Read,
+{
+    use std::io::Write;
+
+    // The upstream `dicom_object::OpenFileOptions` API in use by this project
+    // supports opening from a file path but not from an arbitrary `Read`.
+    // For tests, we write the synthetic data to a temp file.
+    let mut tmp = tempfile::NamedTempFile::new().context("creating temp dicom")?;
+    std::io::copy(&mut reader, &mut tmp).context("writing temp dicom")?;
+    tmp.flush().ok();
+
+    probe_file_identity(tmp.path())
+}
+
 pub fn ensure_study_for_series_or_image(request: &MoveRequest) -> Result<()> {
     if request.study_instance_uid.trim().is_empty() {
         return Err(anyhow!("study_instance_uid is required"));
@@ -332,7 +365,7 @@ pub fn ensure_study_for_series_or_image(request: &MoveRequest) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_find_identifier, dicom_date_range};
+    use super::{build_find_identifier, dicom_date_range, probe_reader_identity};
     use crate::models::{QueryCriteria, QueryLevel, QueryModel};
     use dicom_dictionary_std::tags;
 
@@ -373,5 +406,59 @@ mod tests {
                 .trim_end_matches('\0'),
             "20260411-20260411"
         );
+    }
+
+    #[test]
+    fn probe_reader_identity_returns_expected_uids() {
+        use dicom_dictionary_std::uids::EXPLICIT_VR_LITTLE_ENDIAN;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.dcm");
+
+        let sop_class_uid = "1.2.3.4";
+        let sop_instance_uid = "1.2.3.4.5";
+
+        let obj = dicom_object::mem::InMemDicomObject::from_element_iter([
+            dicom_core::DataElement::new(
+                tags::PATIENT_NAME,
+                dicom_core::VR::PN,
+                dicom_core::PrimitiveValue::from("TEST^PATIENT"),
+            ),
+            dicom_core::DataElement::new(
+                tags::SOP_CLASS_UID,
+                dicom_core::VR::UI,
+                dicom_core::PrimitiveValue::from(sop_class_uid),
+            ),
+            dicom_core::DataElement::new(
+                tags::SOP_INSTANCE_UID,
+                dicom_core::VR::UI,
+                dicom_core::PrimitiveValue::from(sop_instance_uid),
+            ),
+            dicom_core::DataElement::new(
+                tags::PIXEL_DATA,
+                dicom_core::VR::OB,
+                dicom_core::PrimitiveValue::from(vec![0x55; 512 * 512]),
+            ),
+        ]);
+
+        let meta = dicom_object::FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(sop_class_uid)
+            .media_storage_sop_instance_uid(sop_instance_uid)
+            .transfer_syntax(EXPLICIT_VR_LITTLE_ENDIAN)
+            .build()
+            .expect("meta");
+
+        obj.with_exact_meta(meta)
+            .write_to_file(&path)
+            .expect("write");
+
+        let cursor = std::io::Cursor::new(std::fs::read(&path).expect("read"));
+
+        let (got_sop_class_uid, got_sop_instance_uid, got_ts_uid) =
+            probe_reader_identity(cursor).expect("probe ok");
+
+        assert_eq!(got_sop_class_uid, sop_class_uid);
+        assert_eq!(got_sop_instance_uid, sop_instance_uid);
+        assert_eq!(got_ts_uid, EXPLICIT_VR_LITTLE_ENDIAN);
     }
 }

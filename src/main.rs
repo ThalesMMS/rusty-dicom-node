@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use clap::Parser;
-pub use dicom_node_client::{aliases, config, db, dicom, error, importer, models, net, services};
+pub use dicom_node_client::{
+    aliases, cancel, config, db, dicom, error, importer, models, net, services,
+};
 use dicom_node_client::{
     cli::{Cli, Commands, LocalCommand, NodeCommand, SendCommand},
     config::AppPaths,

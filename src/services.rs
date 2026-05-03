@@ -1,17 +1,18 @@
-use std::path::Path;
+use std::{path::Path, sync::atomic::AtomicBool};
 
 use anyhow::anyhow;
 use uuid::Uuid;
 
 use crate::{
+    cancel,
     config::{AppConfig, AppPaths, MigrationResult},
     db::Database,
     error::Result,
     importer::Importer,
     models::{
-        normalize_node_name, parse_port, ImportReport, MoveOutcome, MoveRequest, QueryCriteria,
-        QueryMatch, RemoteNode, RemoteNodeDraft, RemoteNodePatch, ScpSessionReport, SendOutcome,
-        SeriesSummary, StudySummary,
+        normalize_node_name, parse_port, ImportReport, LocalInstance, MoveOutcome, MoveRequest,
+        QueryCriteria, QueryMatch, RemoteNode, RemoteNodeDraft, RemoteNodePatch, ScpSessionReport,
+        SendOutcome, SeriesSummary, StudySummary,
     },
     net::{AssociationFactory, FindScu, MoveScu, StorageScpServer, StoreScu},
 };
@@ -258,6 +259,14 @@ impl AppServices {
         self.importer.import_path(path)
     }
 
+    pub fn import_path_cancellable(
+        &self,
+        path: &Path,
+        cancel_flag: &AtomicBool,
+    ) -> Result<ImportReport> {
+        self.importer.import_path_cancellable(path, cancel_flag)
+    }
+
     pub fn query(
         &self,
         node_name_or_id: &str,
@@ -267,7 +276,36 @@ impl AppServices {
         self.find_scu.query(&node, criteria)
     }
 
-    pub fn retrieve(&self, mut request: MoveRequest) -> Result<MoveOutcome> {
+    pub fn query_cancellable(
+        &self,
+        node_name_or_id: &str,
+        criteria: &QueryCriteria,
+        cancel_flag: &AtomicBool,
+    ) -> Result<Vec<QueryMatch>> {
+        cancel::ensure_not_cancelled(Some(cancel_flag))?;
+        let node = self.get_node(node_name_or_id)?;
+        self.find_scu
+            .query_cancellable(&node, criteria, cancel_flag)
+    }
+
+    pub fn retrieve(&self, request: MoveRequest) -> Result<MoveOutcome> {
+        self.retrieve_with_cancel(request, None)
+    }
+
+    pub fn retrieve_cancellable(
+        &self,
+        request: MoveRequest,
+        cancel_flag: &AtomicBool,
+    ) -> Result<MoveOutcome> {
+        self.retrieve_with_cancel(request, Some(cancel_flag))
+    }
+
+    fn retrieve_with_cancel(
+        &self,
+        mut request: MoveRequest,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<MoveOutcome> {
+        cancel::ensure_not_cancelled(cancel_flag)?;
         let node = self.get_node(&request.node_name_or_id)?;
 
         let resolved_destination = request
@@ -281,12 +319,16 @@ impl AppServices {
         let retrieving_to_local_ae = resolved_destination == self.config.local_ae_title;
 
         let background_server = if retrieving_to_local_ae {
+            cancel::ensure_not_cancelled(cancel_flag)?;
             Some(self.storage_scp.spawn_background()?)
         } else {
             None
         };
 
-        let outcome = self.move_scu.retrieve(&node, &request);
+        let outcome = match cancel_flag {
+            Some(flag) => self.move_scu.retrieve_cancellable(&node, &request, flag),
+            None => self.move_scu.retrieve(&node, &request),
+        };
 
         let scp_session_report = if let Some(handle) = background_server {
             Some(handle.stop()?)
@@ -322,6 +364,25 @@ impl AppServices {
         self.store_scu.send_files(&node, &files)
     }
 
+    pub fn send_study_cancellable(
+        &self,
+        study_instance_uid: &str,
+        destination_node: &str,
+        cancel_flag: &AtomicBool,
+    ) -> Result<SendOutcome> {
+        cancel::ensure_not_cancelled(Some(cancel_flag))?;
+        let node = self.get_node(destination_node)?;
+        let files = self.db.study_files(study_instance_uid)?;
+        if files.is_empty() {
+            return Err(anyhow!(
+                "no local files indexed for study {}",
+                study_instance_uid
+            ));
+        }
+        self.store_scu
+            .send_files_cancellable(&node, &files, cancel_flag)
+    }
+
     pub fn send_series(
         &self,
         series_instance_uid: &str,
@@ -338,12 +399,35 @@ impl AppServices {
         self.store_scu.send_files(&node, &files)
     }
 
+    pub fn send_series_cancellable(
+        &self,
+        series_instance_uid: &str,
+        destination_node: &str,
+        cancel_flag: &AtomicBool,
+    ) -> Result<SendOutcome> {
+        cancel::ensure_not_cancelled(Some(cancel_flag))?;
+        let node = self.get_node(destination_node)?;
+        let files = self.db.series_files(series_instance_uid)?;
+        if files.is_empty() {
+            return Err(anyhow!(
+                "no local files indexed for series {}",
+                series_instance_uid
+            ));
+        }
+        self.store_scu
+            .send_files_cancellable(&node, &files, cancel_flag)
+    }
+
     pub fn local_studies(&self) -> Result<Vec<StudySummary>> {
         self.db.list_studies()
     }
 
     pub fn local_series(&self, study_instance_uid: &str) -> Result<Vec<SeriesSummary>> {
         self.db.list_series_for_study(study_instance_uid)
+    }
+
+    pub fn local_instances(&self, series_instance_uid: &str) -> Result<Vec<LocalInstance>> {
+        self.db.list_instances_for_series(series_instance_uid)
     }
 
     pub fn run_storage_scp(&self) -> Result<()> {

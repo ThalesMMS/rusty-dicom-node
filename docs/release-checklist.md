@@ -19,7 +19,7 @@ This project already has CI, tests, and a usable source-build path, but it shoul
 Until a binary packaging workflow exists, prerelease notes should explicitly say that installation is source-first:
 
 1. source tarball or GitHub-generated source archive
-2. the exact tested Rust toolchain floor (`rust-version = 1.75` today)
+2. the exact tested Rust toolchain floor (`rust-version = 1.88` today)
 3. the existing build/run commands from `README.md`
 4. notable known limitations that still matter for evaluators
 

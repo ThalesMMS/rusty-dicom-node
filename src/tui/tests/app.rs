@@ -92,6 +92,96 @@ fn handle_task_result_clears_stale_query_results_on_query_failure() {
 }
 
 #[test]
+fn apply_cancelled_task_event_moves_task_to_history() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    let created_at = Instant::now();
+    let finished_at = created_at + Duration::from_secs(2);
+    app.running_task = Some(RunningTask {
+        description: "Querying pacs...".to_string(),
+        started_at: created_at,
+    });
+
+    app.queued_tasks.push_back(TaskInfo {
+        id: 7,
+        description: "Querying pacs...".to_string(),
+        status: TaskStatus::Running,
+        created_at,
+        started_at: Some(created_at),
+        finished_at: None,
+        progress: None,
+    });
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop(sender);
+    app.task_runner.receiver = Some(receiver);
+    app.task_runner.active_task_kind = Some(ActiveTaskKind::Query);
+    app.task_runner.active_task_id = Some(7);
+    app.task_runner.active_cancel_flag = Some(std::sync::Arc::new(
+        std::sync::atomic::AtomicBool::new(true),
+    ));
+
+    app.apply_task_event(TaskEvent::Cancelled {
+        id: 7,
+        at: finished_at,
+        reason: Some("cancelled".to_string()),
+    })
+    .unwrap();
+
+    assert!(app.queued_tasks.is_empty());
+    assert_eq!(app.task_history.len(), 1);
+    assert_eq!(app.task_history[0].id, 7);
+    assert_eq!(app.task_history[0].status, TaskStatus::Cancelled);
+    assert_eq!(app.task_history[0].finished_at, Some(finished_at));
+    assert_eq!(app.last_task_error.as_deref(), Some("cancelled"));
+    assert!(app.running_task.is_none());
+    assert!(app.task_runner.receiver.is_none());
+    assert!(app.task_runner.active_task_kind.is_none());
+    assert!(app.task_runner.active_task_id.is_none());
+    assert!(app.task_runner.active_cancel_flag.is_none());
+}
+
+#[test]
+fn apply_cancelled_task_event_preserves_pending_real_result() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    let created_at = Instant::now();
+    let cancelled_at = created_at + Duration::from_secs(2);
+
+    app.queued_tasks.push_back(TaskInfo {
+        id: 7,
+        description: "Querying pacs...".to_string(),
+        status: TaskStatus::Running,
+        created_at,
+        started_at: Some(created_at),
+        finished_at: None,
+        progress: None,
+    });
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    sender.send(TaskResult::Query(Ok(Vec::new()))).unwrap();
+    app.task_runner.receiver = Some(receiver);
+    app.task_runner.active_task_kind = Some(ActiveTaskKind::Query);
+    app.task_runner.active_task_id = Some(7);
+
+    app.apply_task_event(TaskEvent::Cancelled {
+        id: 7,
+        at: cancelled_at,
+        reason: Some("cancelled".to_string()),
+    })
+    .unwrap();
+
+    assert!(app.queued_tasks.is_empty());
+    assert_eq!(app.task_history.len(), 1);
+    assert_eq!(app.task_history[0].id, 7);
+    assert_eq!(app.task_history[0].status, TaskStatus::Succeeded);
+    assert_eq!(app.query_results.len(), 0);
+    assert_eq!(app.last_task_error.as_deref(), Some("cancelled"));
+    assert!(app.task_runner.receiver.is_none());
+    assert!(app.task_runner.active_task_kind.is_none());
+    assert!(app.task_runner.active_task_id.is_none());
+}
+
+#[test]
 fn refresh_local_studies_preserves_series_selection_by_uid_while_drilled_down() {
     let services = test_services();
     add_test_local_instance(

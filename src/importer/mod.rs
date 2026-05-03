@@ -2,21 +2,23 @@ mod persistence;
 mod staging;
 mod traversal;
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::atomic::AtomicBool};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use dicom_dictionary_std::tags;
 use dicom_object::OpenFileOptions;
+use rusqlite::Connection;
 
 use crate::{
+    cancel,
     config::{AppConfig, AppPaths},
-    db::Database,
+    db::{Database, InstanceImportStatements},
     error::Result,
     models::ImportReport,
 };
 
 use persistence::StoreDicomError;
-use staging::{remove_file_if_exists, stage_reader_with_sha256};
+use staging::{remove_file_if_exists, stage_reader_with_sha256, FileCleanupGuard};
 use traversal::{
     is_zip_path, record_invalid_dicom_with_warning, record_unreadable_with_warning,
     regular_file_metadata, validate_readable_dir, validate_readable_file,
@@ -35,32 +37,77 @@ impl Importer {
     }
 
     pub fn import_path(&self, path: &Path) -> Result<ImportReport> {
+        self.import_path_with_cancel(path, None)
+    }
+
+    pub fn import_path_cancellable(
+        &self,
+        path: &Path,
+        cancel_flag: &AtomicBool,
+    ) -> Result<ImportReport> {
+        self.import_path_with_cancel(path, Some(cancel_flag))
+    }
+
+    fn import_path_with_cancel(
+        &self,
+        path: &Path,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<ImportReport> {
+        cancel::ensure_not_cancelled(cancel_flag)?;
         if !path.exists() {
             return Err(anyhow!("Import path does not exist: {}", path.display()));
         }
 
         if path.is_dir() {
             validate_readable_dir(path)?;
-            self.import_folder(path)
+            self.import_folder_with_cancel(path, cancel_flag)
         } else if is_zip_path(path) {
             validate_readable_file(path, "ZIP import file")?;
-            self.import_zip(path)
+            self.import_zip_with_cancel(path, cancel_flag)
         } else {
             validate_readable_file(path, "import file")?;
             let mut report = ImportReport::default();
-            self.import_file_candidate(path, &mut report)?;
+            self.import_file_candidate(path, &mut report, cancel_flag)?;
             Ok(report)
         }
     }
 
-    fn import_file_candidate(&self, path: &Path, report: &mut ImportReport) -> Result<()> {
+    fn import_file_candidate(
+        &self,
+        path: &Path,
+        report: &mut ImportReport,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<()> {
+        self.import_file_candidate_with_conn(path, report, cancel_flag, None)
+            .map(|_| ())
+    }
+
+    fn import_file_candidate_in_conn(
+        &self,
+        conn: &Connection,
+        stmts: &mut InstanceImportStatements<'_>,
+        path: &Path,
+        report: &mut ImportReport,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<Option<FileCleanupGuard>> {
+        self.import_file_candidate_with_conn(path, report, cancel_flag, Some((conn, stmts)))
+    }
+
+    fn import_file_candidate_with_conn(
+        &self,
+        path: &Path,
+        report: &mut ImportReport,
+        cancel_flag: Option<&AtomicBool>,
+        mut import_conn: Option<(&Connection, &mut InstanceImportStatements<'_>)>,
+    ) -> Result<Option<FileCleanupGuard>> {
+        cancel::ensure_not_cancelled(cancel_flag)?;
         report.scanned_files += 1;
 
         let metadata = match regular_file_metadata(path) {
             Ok(metadata) => metadata,
             Err(err) => {
                 record_unreadable_with_warning(report, path.display(), err);
-                return Ok(());
+                return Ok(None);
             }
         };
         let file_size = metadata.len();
@@ -71,10 +118,11 @@ impl Importer {
                     path.display(),
                     format!("file too large: {file_size} > {max_file_import_bytes}"),
                 );
-                return Ok(());
+                return Ok(None);
             }
         }
 
+        cancel::ensure_not_cancelled(cancel_flag)?;
         let file = match fs::File::open(path) {
             Ok(file) => file,
             Err(err) => {
@@ -83,10 +131,11 @@ impl Importer {
                     path.display(),
                     format!("opening file: {err}"),
                 );
-                return Ok(());
+                return Ok(None);
             }
         };
 
+        cancel::ensure_not_cancelled(cancel_flag)?;
         // Snapshot the source first so validation and payload persistence operate on the
         // exact same bytes even if the original file changes during import.
         let (staged_path, sha256, file_size_bytes) = match stage_reader_with_sha256(
@@ -94,18 +143,21 @@ impl Importer {
             &self.paths.managed_store_dir,
             path,
             self.config.max_file_import_bytes,
+            cancel_flag,
         ) {
             Ok(staged) => staged,
+            Err(err) if cancel::is_cancelled_error(&err) => return Err(err),
             Err(err) => {
                 record_unreadable_with_warning(
                     report,
                     path.display(),
                     format!("reading file: {err}"),
                 );
-                return Ok(());
+                return Ok(None);
             }
         };
 
+        self.remove_staged_if_cancelled(&staged_path, cancel_flag)?;
         let file_obj = match OpenFileOptions::new()
             .read_until(tags::PIXEL_DATA)
             .open_file(&staged_path)
@@ -118,31 +170,63 @@ impl Importer {
                     path.display(),
                     format!("DICOM parse failed: {err}"),
                 );
-                return Ok(());
+                return Ok(None);
             }
         };
         let source_path = path.to_string_lossy().to_string();
-        if let Err(err) = self.store_valid_dicom_file(
-            staged_path.as_path(),
-            sha256,
-            file_size_bytes,
-            file_obj,
-            source_path.clone(),
-            report,
-        ) {
-            match err {
+        self.remove_staged_if_cancelled(&staged_path, cancel_flag)?;
+        let store_result = match import_conn.as_mut() {
+            Some((conn, stmts)) => self.store_valid_dicom_file_in_conn(
+                conn,
+                stmts,
+                staged_path.as_path(),
+                sha256,
+                file_size_bytes,
+                file_obj,
+                source_path.clone(),
+                report,
+            ),
+            None => self
+                .store_valid_dicom_file(
+                    staged_path.as_path(),
+                    sha256,
+                    file_size_bytes,
+                    file_obj,
+                    source_path.clone(),
+                    report,
+                )
+                .map(|()| None),
+        };
+        match store_result {
+            Ok(managed_cleanup) => Ok(managed_cleanup),
+            Err(err) => match err {
                 StoreDicomError::InvalidDicom(err) => {
                     record_invalid_dicom_with_warning(
                         report,
                         source_path,
                         format!("DICOM validation failed: {err}"),
                     );
-                    return Ok(());
+                    Ok(None)
                 }
-                StoreDicomError::Fatal(err) => return Err(err),
-            }
+                StoreDicomError::Fatal(err) => Err(err),
+            },
         }
-        Ok(())
+    }
+
+    fn remove_staged_if_cancelled(
+        &self,
+        staged_path: &Path,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<()> {
+        if cancel::is_cancelled(cancel_flag) {
+            remove_file_if_exists(staged_path).with_context(|| {
+                format!(
+                    "removing staged file after cancellation {}",
+                    staged_path.display()
+                )
+            })?;
+        }
+        cancel::ensure_not_cancelled(cancel_flag)
     }
 }
 
@@ -289,9 +373,9 @@ mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::atomic::AtomicBool};
 
-    use crate::config::AppConfig;
+    use crate::{cancel, config::AppConfig};
 
     use super::test_support::{staged_files, test_importer};
 
@@ -331,6 +415,24 @@ mod tests {
         assert!(
             staged_files(&importer).is_empty(),
             "expected no staged files after parse failure"
+        );
+    }
+
+    #[test]
+    fn cancellation_cleans_up_staged_copy() {
+        let (_root, importer) = test_importer(AppConfig::default());
+        let staged_path = importer.paths.managed_store_dir.join("cancelled.tmp");
+        fs::write(&staged_path, b"staged").expect("write staged file");
+        let cancel_flag = AtomicBool::new(true);
+
+        let error = importer
+            .remove_staged_if_cancelled(&staged_path, Some(&cancel_flag))
+            .unwrap_err();
+
+        assert!(cancel::is_cancelled_error(&error));
+        assert!(
+            !staged_path.exists(),
+            "expected staged file to be removed on cancellation"
         );
     }
 }

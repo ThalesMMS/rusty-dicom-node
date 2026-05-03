@@ -58,26 +58,69 @@ impl TuiApp {
             KeyCode::Char('q') if self.focus != FocusPane::Input => {
                 self.should_quit = true;
             }
+            KeyCode::Esc if self.focus == FocusPane::Local && self.local_instance_drill_down => {
+                self.clear_local_instance_drill_down();
+            }
             KeyCode::Esc if self.focus == FocusPane::Local && self.local_drill_down => {
                 self.clear_local_drill_down();
             }
+            KeyCode::Esc
+                if self.focus == FocusPane::Config
+                    || self.focus == FocusPane::Logs
+                    || self.focus == FocusPane::Tasks =>
+            {
+                self.detail_scroll = 0;
+            }
             KeyCode::Esc => {
                 self.focus = FocusPane::Input;
+                self.detail_scroll = 0;
             }
             KeyCode::Tab => {
                 self.focus = self.focus.next();
+                self.detail_scroll = 0;
             }
             KeyCode::BackTab => {
                 self.focus = self.focus.previous();
+                self.detail_scroll = 0;
             }
             KeyCode::Char('r') if self.focus != FocusPane::Input => {
                 self.refresh_all()?;
                 self.log("refreshed");
             }
+            KeyCode::Char('t') if self.focus == FocusPane::Tasks => {
+                self.selected_task_scope = match self.selected_task_scope {
+                    TaskListScope::Queued => TaskListScope::History,
+                    TaskListScope::History => TaskListScope::Queued,
+                };
+                self.selected_task = None;
+                self.detail_scroll = 0;
+            }
+            KeyCode::Up
+                if self.focus == FocusPane::Config
+                    || self.focus == FocusPane::Logs
+                    || self.focus == FocusPane::Tasks => {}
+            KeyCode::Down
+                if self.focus == FocusPane::Config
+                    || self.focus == FocusPane::Logs
+                    || self.focus == FocusPane::Tasks => {}
             KeyCode::Up => self.move_current_selection(-1),
             KeyCode::Down => self.move_current_selection(1),
-            KeyCode::Char('j') if self.focus != FocusPane::Input => self.move_current_selection(1),
-            KeyCode::Char('k') if self.focus != FocusPane::Input => self.move_current_selection(-1),
+            KeyCode::Char('j')
+                if self.focus != FocusPane::Input
+                    && self.focus != FocusPane::Config
+                    && self.focus != FocusPane::Logs
+                    && self.focus != FocusPane::Tasks =>
+            {
+                self.move_current_selection(1)
+            }
+            KeyCode::Char('k')
+                if self.focus != FocusPane::Input
+                    && self.focus != FocusPane::Config
+                    && self.focus != FocusPane::Logs
+                    && self.focus != FocusPane::Tasks =>
+            {
+                self.move_current_selection(-1)
+            }
             KeyCode::Char('a') if self.focus == FocusPane::Nodes => {
                 self.modal = Some(ModalState::AddNode(NodeFormState::add()));
             }
@@ -93,8 +136,26 @@ impl TuiApp {
             KeyCode::Char('m') if self.focus == FocusPane::Query => {
                 self.open_retrieve_modal();
             }
+            KeyCode::Char('i') if self.focus == FocusPane::Local => {
+                self.open_import_modal();
+            }
+            KeyCode::Char('s') if self.focus == FocusPane::Local => {
+                self.open_send_modal();
+            }
+            KeyCode::Char('c') if self.focus == FocusPane::Config => {
+                self.open_config_modal();
+            }
             KeyCode::Enter if self.focus == FocusPane::Local && !self.local_drill_down => {
                 self.enter_local_drill_down()?;
+            }
+            KeyCode::Enter if self.focus == FocusPane::Tasks => {
+                self.open_task_inspect_modal();
+            }
+            KeyCode::PageDown if self.focus != FocusPane::Input => {
+                self.detail_scroll = self.detail_scroll.saturating_add(10);
+            }
+            KeyCode::PageUp if self.focus != FocusPane::Input => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(10);
             }
             _ => {}
         }

@@ -11,6 +11,7 @@ pub(super) type PanicHook = Box<dyn Fn(&panic::PanicInfo<'_>) + Sync + Send + 's
 
 pub(super) struct TerminalGuard {
     pub(super) terminal: TuiTerminal,
+    pub(super) list_states: TuiListStates,
 }
 
 impl TerminalGuard {
@@ -32,11 +33,15 @@ impl TerminalGuard {
             error
         })?;
 
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            list_states: TuiListStates::default(),
+        })
     }
 
     pub(super) fn draw(&mut self, view: &TuiView) -> anyhow::Result<()> {
-        self.terminal.draw(|frame| draw_ui(frame, view))?;
+        self.terminal
+            .draw(|frame| draw_ui(frame, view, &mut self.list_states))?;
         Ok(())
     }
 }

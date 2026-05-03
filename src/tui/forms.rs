@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::validate_ae_title;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NodeFormMode {
@@ -6,7 +7,7 @@ pub(super) enum NodeFormMode {
     Edit,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) enum NodeField {
     Name,
     AeTitle,
@@ -47,6 +48,8 @@ pub(super) struct NodeFormState {
     pub(super) move_destination: String,
     pub(super) notes: String,
     pub(super) error: Option<String>,
+
+    pub(super) touched: std::collections::BTreeSet<NodeField>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +75,7 @@ impl NodeFormState {
             move_destination: String::new(),
             notes: String::new(),
             error: None,
+            touched: std::collections::BTreeSet::new(),
         }
     }
 
@@ -87,6 +91,7 @@ impl NodeFormState {
             move_destination: node.preferred_move_destination.clone().unwrap_or_default(),
             notes: node.notes.clone().unwrap_or_default(),
             error: None,
+            touched: std::collections::BTreeSet::new(),
         }
     }
 
@@ -109,7 +114,7 @@ impl NodeFormState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) enum QueryField {
     Model,
     Level,
@@ -167,6 +172,8 @@ pub(super) struct QueryFormState {
     pub(super) modality: String,
     pub(super) study_description: String,
     pub(super) error: Option<String>,
+
+    pub(super) touched: std::collections::BTreeSet<QueryField>,
 }
 
 impl QueryFormState {
@@ -187,6 +194,7 @@ impl QueryFormState {
             modality: String::new(),
             study_description: String::new(),
             error: None,
+            touched: std::collections::BTreeSet::new(),
         }
     }
 
@@ -207,7 +215,7 @@ impl QueryFormState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(super) enum RetrieveField {
     Model,
     Level,
@@ -247,6 +255,246 @@ pub(super) struct RetrieveFormState {
     pub(super) instance_uid: String,
     pub(super) destination: String,
     pub(super) error: Option<String>,
+
+    pub(super) touched: std::collections::BTreeSet<RetrieveField>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) enum ImportField {
+    Path,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ImportFormState {
+    pub(super) active: ImportField,
+    pub(super) path: String,
+    pub(super) error: Option<String>,
+
+    pub(super) touched: std::collections::BTreeSet<ImportField>,
+}
+
+impl ImportFormState {
+    pub(super) fn new() -> Self {
+        Self {
+            active: ImportField::Path,
+            path: String::new(),
+            error: None,
+            touched: std::collections::BTreeSet::new(),
+        }
+    }
+
+    pub(super) fn active_text_mut(&mut self) -> Option<&mut String> {
+        match self.active {
+            ImportField::Path => Some(&mut self.path),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) enum SendKind {
+    Study,
+    Series,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) enum SendField {
+    Kind,
+    Uid,
+    DestinationNode,
+}
+
+impl SendField {
+    const ALL: [Self; 3] = [Self::Kind, Self::Uid, Self::DestinationNode];
+
+    pub(super) fn next(self) -> Self {
+        advance_enum(Self::ALL, self, 1)
+    }
+
+    pub(super) fn previous(self) -> Self {
+        advance_enum(Self::ALL, self, -1)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SendFormState {
+    pub(super) active: SendField,
+    pub(super) kind: SendKind,
+    pub(super) uid: String,
+    pub(super) destination_node: String,
+    pub(super) error: Option<String>,
+
+    pub(super) touched: std::collections::BTreeSet<SendField>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) enum StorageScpField {
+    LocalAeTitle,
+    BindAddr,
+    Port,
+    AllowPromiscuous,
+    StrictPdu,
+    MaxPduLength,
+}
+
+impl StorageScpField {
+    const ALL: [Self; 6] = [
+        Self::LocalAeTitle,
+        Self::BindAddr,
+        Self::Port,
+        Self::AllowPromiscuous,
+        Self::StrictPdu,
+        Self::MaxPduLength,
+    ];
+
+    pub(super) fn next(self) -> Self {
+        advance_enum(Self::ALL, self, 1)
+    }
+
+    pub(super) fn previous(self) -> Self {
+        advance_enum(Self::ALL, self, -1)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct StorageScpFormState {
+    pub(super) active: StorageScpField,
+    pub(super) local_ae_title: String,
+    pub(super) bind_addr: String,
+    pub(super) port: String,
+    pub(super) allow_promiscuous_storage: bool,
+    pub(super) strict_pdu: bool,
+    pub(super) max_pdu_length: String,
+    pub(super) error: Option<String>,
+
+    pub(super) touched: std::collections::BTreeSet<StorageScpField>,
+}
+
+impl StorageScpFormState {
+    pub(super) fn from_config(config: &crate::config::AppConfig) -> Self {
+        Self {
+            active: StorageScpField::LocalAeTitle,
+            local_ae_title: config.local_ae_title.clone(),
+            bind_addr: config.storage_bind_addr.clone(),
+            port: config.storage_scp_port.to_string(),
+            allow_promiscuous_storage: config.allow_promiscuous_storage,
+            strict_pdu: config.strict_pdu,
+            max_pdu_length: config.max_pdu_length.to_string(),
+            error: None,
+            touched: std::collections::BTreeSet::new(),
+        }
+    }
+
+    pub(super) fn active_text_mut(&mut self) -> Option<&mut String> {
+        match self.active {
+            StorageScpField::LocalAeTitle => Some(&mut self.local_ae_title),
+            StorageScpField::BindAddr => Some(&mut self.bind_addr),
+            StorageScpField::Port => Some(&mut self.port),
+            StorageScpField::MaxPduLength => Some(&mut self.max_pdu_length),
+            StorageScpField::AllowPromiscuous | StorageScpField::StrictPdu => None,
+        }
+    }
+}
+
+impl SendFormState {
+    pub(super) fn new() -> Self {
+        Self {
+            active: SendField::Kind,
+            kind: SendKind::Study,
+            uid: String::new(),
+            destination_node: String::new(),
+            error: None,
+            touched: std::collections::BTreeSet::new(),
+        }
+    }
+
+    pub(super) fn title(&self) -> &'static str {
+        match self.kind {
+            SendKind::Study => "Send Study",
+            SendKind::Series => "Send Series",
+        }
+    }
+
+    pub(super) fn active_text_mut(&mut self) -> Option<&mut String> {
+        match self.active {
+            SendField::Kind => None,
+            SendField::Uid => Some(&mut self.uid),
+            SendField::DestinationNode => Some(&mut self.destination_node),
+        }
+    }
+}
+
+pub(super) fn cycle_send_form_field(form: &mut SendFormState, delta: isize) {
+    match form.active {
+        SendField::Kind => {
+            form.kind = match (form.kind, delta.is_positive()) {
+                (SendKind::Study, true) => SendKind::Series,
+                (SendKind::Series, true) => SendKind::Study,
+                (SendKind::Study, false) => SendKind::Series,
+                (SendKind::Series, false) => SendKind::Study,
+            };
+        }
+        SendField::Uid | SendField::DestinationNode => {}
+    }
+}
+
+pub(super) fn build_send_request(
+    form: &SendFormState,
+) -> anyhow::Result<(SendKind, String, String)> {
+    let uid = form.uid.trim();
+    if uid.is_empty() {
+        return Err(anyhow!("UID is required"));
+    }
+    validate_uid(uid)?;
+
+    let destination = form.destination_node.trim();
+    if destination.is_empty() {
+        return Err(anyhow!("destination node is required"));
+    }
+
+    Ok((form.kind, uid.to_string(), destination.to_string()))
+}
+
+pub(super) fn parse_storage_scp_form(
+    existing: &crate::config::AppConfig,
+    form: &StorageScpFormState,
+) -> anyhow::Result<crate::config::AppConfig> {
+    let local_ae_title = form.local_ae_title.trim().to_ascii_uppercase();
+    if local_ae_title.is_empty() {
+        return Err(anyhow!("local AE title is required"));
+    }
+    validate_ae_title(&local_ae_title)
+        .map_err(|err| anyhow!("local AE title is invalid: {err}"))?;
+
+    let bind_addr = form.bind_addr.trim();
+    if bind_addr.is_empty() {
+        return Err(anyhow!("bind address is required"));
+    }
+
+    let port = form.port.trim();
+    if port.is_empty() {
+        return Err(anyhow!("port is required"));
+    }
+    let storage_scp_port = parse_port(port)?;
+
+    let max_pdu_length = form.max_pdu_length.trim();
+    if max_pdu_length.is_empty() {
+        return Err(anyhow!("max PDU length is required"));
+    }
+    let max_pdu_length: u32 = max_pdu_length
+        .parse()
+        .map_err(|_| anyhow!("max PDU length must be an integer"))?;
+    if max_pdu_length == 0 {
+        return Err(anyhow!("max PDU length must be greater than 0"));
+    }
+
+    let mut next = existing.clone();
+    next.local_ae_title = local_ae_title;
+    next.storage_bind_addr = bind_addr.to_string();
+    next.storage_scp_port = storage_scp_port;
+    next.max_pdu_length = max_pdu_length;
+    next.strict_pdu = form.strict_pdu;
+    next.allow_promiscuous_storage = form.allow_promiscuous_storage;
+    Ok(next)
 }
 
 impl RetrieveFormState {
@@ -282,6 +530,7 @@ impl RetrieveFormState {
             instance_uid: result.sop_instance_uid.clone().unwrap_or_default(),
             destination,
             error: None,
+            touched: std::collections::BTreeSet::new(),
         })
     }
 
@@ -302,21 +551,116 @@ pub(super) struct DeleteConfirmState {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct TaskInspectState {
+    pub(super) title: String,
+    pub(super) content: Text<'static>,
+}
+
+fn validate_dicom_date(value: &str) -> anyhow::Result<()> {
+    if value.len() != 8 {
+        return Err(anyhow!("expected YYYYMMDD"));
+    }
+    if !value.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("expected YYYYMMDD"));
+    }
+    Ok(())
+}
+
+fn validate_uid(value: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        return Err(anyhow!("UID cannot be empty"));
+    }
+    if value.len() > 64 {
+        return Err(anyhow!("UID must be at most 64 characters"));
+    }
+    if value.starts_with('.') || value.ends_with('.') {
+        return Err(anyhow!("UID cannot start or end with a dot"));
+    }
+    for part in value.split('.') {
+        if part.is_empty() {
+            return Err(anyhow!("UID cannot contain empty components"));
+        }
+        if part.len() > 16 {
+            return Err(anyhow!("UID component '{}' is too long", part));
+        }
+        if !part.chars().all(|c| c.is_ascii_digit()) {
+            return Err(anyhow!("UID component '{}' must be numeric", part));
+        }
+        if part.len() > 1 && part.starts_with('0') {
+            return Err(anyhow!(
+                "UID component '{}' cannot have leading zeros",
+                part
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_modality(value: &str) -> anyhow::Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("modality cannot be empty"));
+    }
+    if trimmed.len() > 16 {
+        return Err(anyhow!("modality must be at most 16 characters"));
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return Err(anyhow!("modality must be A-Z or 0-9"));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
 pub(super) enum ModalState {
     AddNode(NodeFormState),
     EditNode(NodeFormState),
     ConfirmDeleteNode(DeleteConfirmState),
     Query(QueryFormState),
     Retrieve(RetrieveFormState),
+    Import(ImportFormState),
+    Send(SendFormState),
+    StorageScp(StorageScpFormState),
+    TaskInspect(TaskInspectState),
 }
 
 pub(super) fn parse_node_form(form: &NodeFormState) -> anyhow::Result<NodeFormValues> {
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Err(anyhow!("node name is required"));
+    }
+
+    let ae_title = form.ae_title.trim().to_ascii_uppercase();
+    if ae_title.is_empty() {
+        return Err(anyhow!("AE title is required"));
+    }
+    validate_ae_title(&ae_title)?;
+
+    let host = form.host.trim();
+    if host.is_empty() {
+        return Err(anyhow!("host is required"));
+    }
+
+    let port = form.port.trim();
+    if port.is_empty() {
+        return Err(anyhow!("port is required"));
+    }
+
+    let move_destination = trim_to_option(Some(form.move_destination.clone()))
+        .map(|value| value.trim().to_ascii_uppercase());
+    if let Some(ref value) = move_destination {
+        validate_ae_title(value)
+            .map_err(|err| anyhow!("move destination AE title is invalid: {}", err))?;
+    }
+
     Ok(NodeFormValues {
-        name: form.name.trim().to_string(),
-        ae_title: form.ae_title.trim().to_string(),
-        host: form.host.trim().to_string(),
-        port: parse_port(form.port.trim())?,
-        move_destination: trim_to_option(Some(form.move_destination.clone())),
+        name: name.to_string(),
+        ae_title,
+        host: host.to_string(),
+        port: parse_port(port)?,
+        move_destination,
         notes: trim_to_option(Some(form.notes.clone())),
     })
 }
@@ -360,9 +704,56 @@ pub(super) fn build_query_criteria(form: &QueryFormState) -> QueryCriteria {
     }
 }
 
+pub(super) fn validate_query_form(form: &QueryFormState) -> anyhow::Result<()> {
+    let date_from = trim_to_option(Some(form.date_from.clone()));
+    let date_to = trim_to_option(Some(form.date_to.clone()));
+
+    if date_from.is_some() ^ date_to.is_some() {
+        return Err(anyhow!(
+            "both date from and date to must be set, or neither"
+        ));
+    }
+
+    if let (Some(from), Some(to)) = (date_from.as_deref(), date_to.as_deref()) {
+        validate_dicom_date(from).map_err(|err| anyhow!("date from is invalid: {}", err))?;
+        validate_dicom_date(to).map_err(|err| anyhow!("date to is invalid: {}", err))?;
+
+        if from > to {
+            return Err(anyhow!("date from must be on or before date to"));
+        }
+    }
+
+    if let Some(modality) = trim_to_option(Some(form.modality.clone())) {
+        validate_modality(&modality)?;
+    }
+
+    // Enforce level-specific requirements for UID-based searching.
+    match form.level {
+        QueryLevel::Patient => {}
+        QueryLevel::Study => {}
+        QueryLevel::Series => {
+            if trim_to_option(Some(form.study_uid.clone())).is_none() {
+                return Err(anyhow!("study UID is required for series-level queries"));
+            }
+        }
+        QueryLevel::Image => {
+            if trim_to_option(Some(form.study_uid.clone())).is_none() {
+                return Err(anyhow!("study UID is required for image-level queries"));
+            }
+            if trim_to_option(Some(form.series_uid.clone())).is_none() {
+                return Err(anyhow!("series UID is required for image-level queries"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn build_move_request(form: &RetrieveFormState) -> anyhow::Result<MoveRequest> {
     let study_instance_uid = trim_to_option(Some(form.study_uid.clone()))
         .ok_or_else(|| anyhow!("study UID is required"))?;
+    validate_uid(&study_instance_uid).map_err(|err| anyhow!("study UID is invalid: {}", err))?;
+
     let input_series_instance_uid = trim_to_option(Some(form.series_uid.clone()));
     let input_sop_instance_uid = trim_to_option(Some(form.instance_uid.clone()));
 
@@ -372,16 +763,31 @@ pub(super) fn build_move_request(form: &RetrieveFormState) -> anyhow::Result<Mov
         QueryLevel::Series => {
             let series_instance_uid = input_series_instance_uid
                 .ok_or_else(|| anyhow!("series UID is required for series-level retrieve"))?;
+            validate_uid(&series_instance_uid)
+                .map_err(|err| anyhow!("series UID is invalid: {}", err))?;
             (Some(series_instance_uid), None)
         }
         QueryLevel::Image => {
             let series_instance_uid = input_series_instance_uid
                 .ok_or_else(|| anyhow!("series UID is required for image-level retrieve"))?;
+            validate_uid(&series_instance_uid)
+                .map_err(|err| anyhow!("series UID is invalid: {}", err))?;
+
             let sop_instance_uid = input_sop_instance_uid
                 .ok_or_else(|| anyhow!("instance UID is required for image-level retrieve"))?;
+            validate_uid(&sop_instance_uid)
+                .map_err(|err| anyhow!("instance UID is invalid: {}", err))?;
+
             (Some(series_instance_uid), Some(sop_instance_uid))
         }
     };
+
+    let move_destination = trim_to_option(Some(form.destination.clone()))
+        .map(|value| value.trim().to_ascii_uppercase());
+    if let Some(ref value) = move_destination {
+        validate_ae_title(value)
+            .map_err(|err| anyhow!("move destination AE title is invalid: {}", err))?;
+    }
 
     Ok(MoveRequest {
         node_name_or_id: form.node.id.clone(),
@@ -390,8 +796,34 @@ pub(super) fn build_move_request(form: &RetrieveFormState) -> anyhow::Result<Mov
         study_instance_uid,
         series_instance_uid,
         sop_instance_uid,
-        move_destination: trim_to_option(Some(form.destination.clone())),
+        move_destination,
     })
+}
+
+pub(super) fn build_import_path(form: &ImportFormState) -> anyhow::Result<std::path::PathBuf> {
+    let path = form.path.trim();
+    if path.is_empty() {
+        return Err(anyhow!("import path is required"));
+    }
+
+    let path = std::path::PathBuf::from(path);
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("accessing import path {}", path.display()))?;
+    if !(metadata.is_file() || metadata.is_dir()) {
+        return Err(anyhow!(
+            "import path must be a file or directory: {}",
+            path.display()
+        ));
+    }
+    if metadata.is_file() {
+        std::fs::File::open(&path)
+            .with_context(|| format!("opening import file {}", path.display()))?;
+    } else {
+        std::fs::read_dir(&path)
+            .with_context(|| format!("reading import directory {}", path.display()))?;
+    }
+
+    Ok(path)
 }
 
 pub(super) fn cycle_query_form_field(form: &mut QueryFormState, delta: isize) {
@@ -575,6 +1007,7 @@ mod tests {
             instance_uid: "1.2.3.4.5".to_string(),
             destination: String::new(),
             error: None,
+            touched: std::collections::BTreeSet::new(),
         };
 
         let request = build_move_request(&form).unwrap();
@@ -611,6 +1044,7 @@ mod tests {
             instance_uid: "1.2.3.4.5".to_string(),
             destination: String::new(),
             error: None,
+            touched: std::collections::BTreeSet::new(),
         };
 
         form.level = QueryLevel::Study;

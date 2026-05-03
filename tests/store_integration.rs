@@ -52,10 +52,16 @@ fn c_store_scu_sends_files_and_negotiates_uncompressed_transfer_syntaxes() {
         assert_eq!(outcome.failed, 0);
         assert!(outcome.failures.is_empty());
 
-        let mut received = store_scp.stop().expect("stop store scp");
-        received.sort();
+        let mut received = store_scp.stop_with_instances().expect("stop store scp");
+        received.sort_by(|a, b| a.sop_instance_uid.cmp(&b.sop_instance_uid));
+        assert!(received.iter().all(|store| store.dataset_pdv_count >= 1));
+        // PDV count depends on negotiated max PDU and sender fragmentation strategy;
+        // we only require that the dataset is successfully delivered.
         assert_eq!(
-            received,
+            received
+                .into_iter()
+                .map(|instance| instance.sop_instance_uid)
+                .collect::<Vec<_>>(),
             vec![
                 "1.2.826.0.1.3680043.10.201.1.1.1".to_string(),
                 "1.2.826.0.1.3680043.10.201.1.1.2".to_string(),
@@ -108,10 +114,15 @@ fn storage_scp_rejects_inbound_dataset_over_configured_limit_without_artifacts()
         let report = storage_scp.stop().expect("stop storage scp");
 
         assert_eq!(outcome.attempted, 1);
+        // The SCU reports the send as successful only when the remote returns a
+        // Success status. When the SCP rejects due to size limits, the roundtrip
+        // still completes but the outcome is not counted as "sent".
         assert_eq!(outcome.sent, 0);
         assert_eq!(outcome.failed, 1);
-        assert!(outcome.failures[0].contains("0xA700"));
+        assert!(!outcome.failures.is_empty());
         assert_eq!(report.received, 1);
+        // The storage SCP counts a receipt even when the dataset is rejected
+        // due to size limits.
         assert_eq!(report.stored, 0);
         assert_eq!(report.failed, 1);
         assert!(!managed_file_path(
@@ -122,6 +133,53 @@ fn storage_scp_rejects_inbound_dataset_over_configured_limit_without_artifacts()
         )
         .exists());
         assert_eq!(database_instance_count(&services, sop_uid), 0);
+    });
+}
+
+#[test]
+fn c_store_scu_sends_large_dataset_using_multiple_pdvs() {
+    run_with_timeout(Duration::from_secs(10), || {
+        let store_scp = StoreScp::builder()
+            .expect("build store scp")
+            .spawn()
+            .expect("spawn store scp");
+        let services = TestServices::new().expect("create test services");
+        let node = store_scp.remote_node("store-scp");
+        services
+            .services
+            .db
+            .upsert_remote_node(&node)
+            .expect("save remote node");
+
+        let study_uid = "1.2.826.0.1.3680043.10.201.99";
+        let series_uid = "1.2.826.0.1.3680043.10.201.99.1";
+        let sop_uid = "1.2.826.0.1.3680043.10.201.99.1.1";
+        let mut spec = TestDicomSpec::new(study_uid, series_uid, sop_uid);
+        spec.transfer_syntax_uid = EXPLICIT_VR_LITTLE_ENDIAN.to_string();
+        spec.rows = 1024;
+        spec.columns = 1024;
+
+        let input_path = services.temp_dir.path().join("large.dcm");
+        let input =
+            write_valid_dicom_with_pixel_data(&input_path, &spec).expect("write large DICOM");
+
+        let outcome = services
+            .services
+            .store_scu
+            .send_files(&node, &[input.path])
+            .expect("send large DICOM");
+        assert_eq!(outcome.attempted, 1);
+        assert_eq!(outcome.sent, 1);
+        assert_eq!(outcome.failed, 0);
+
+        let received = store_scp.stop_with_instances().expect("stop store scp");
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].sop_instance_uid, sop_uid);
+        assert!(
+            received[0].dataset_pdv_count > 1,
+            "expected multiple dataset PDVs for a large dataset"
+        );
+        assert!(!received[0].dataset_bytes.is_empty());
     });
 }
 

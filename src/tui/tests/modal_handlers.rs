@@ -26,6 +26,23 @@ fn busy_guard_keeps_query_modal_open() {
 }
 
 #[test]
+fn handle_query_form_key_q_appends_to_text_field() {
+    let services = test_services();
+    add_test_node(&services, "pacs", "PACSAE");
+    let node = services.get_node("pacs").unwrap();
+    let mut app = TuiApp::new(services.services.clone());
+    let mut form = QueryFormState::new(node);
+    form.active = QueryField::PatientName;
+
+    let keep = app
+        .handle_query_form_key(&mut form, key(KeyCode::Char('q')))
+        .unwrap();
+
+    assert!(keep);
+    assert_eq!(form.patient_name, "q");
+}
+
+#[test]
 fn handle_modal_key_restores_modal_when_handler_errors() {
     let services = test_services();
     add_test_node(&services, "pacs", "PACSAE");
@@ -109,6 +126,20 @@ fn handle_node_form_key_esc_returns_false_closes_modal() {
         .unwrap();
 
     assert!(!keep);
+}
+
+#[test]
+fn handle_node_form_key_q_appends_to_active_field() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    let mut form = NodeFormState::add();
+
+    let keep = app
+        .handle_node_form_key(&mut form, key(KeyCode::Char('q')))
+        .unwrap();
+
+    assert!(keep);
+    assert_eq!(form.name, "q");
 }
 
 #[test]
@@ -334,4 +365,116 @@ fn open_retrieve_modal_without_context_node_logs_error() {
     assert!(app.modal.is_none());
     let last_log = app.logs.last().expect("log line");
     assert!(last_log.contains("query a remote node first"));
+}
+
+#[test]
+fn handle_retrieve_form_key_q_appends_to_text_field() {
+    let services = test_services();
+    add_test_node(&services, "pacs", "PACSAE");
+    let node = services.get_node("pacs").unwrap();
+    let mut app = TuiApp::new(services.services.clone());
+    let result = QueryMatch {
+        level: QueryLevel::Study,
+        patient_name: None,
+        patient_id: None,
+        accession_number: None,
+        study_instance_uid: Some("1.2.3".to_string()),
+        series_instance_uid: None,
+        sop_instance_uid: None,
+        study_date: None,
+        study_description: None,
+        series_description: None,
+        series_number: None,
+        modality: None,
+        instance_number: None,
+    };
+    let mut form =
+        RetrieveFormState::from_result(node, QueryModel::PatientRoot, &result, "LOCALAE").unwrap();
+    form.active = RetrieveField::Destination;
+    form.destination.clear();
+
+    let keep = app
+        .handle_retrieve_form_key(&mut form, key(KeyCode::Char('q')))
+        .unwrap();
+
+    assert!(keep);
+    assert_eq!(form.destination, "q");
+}
+
+#[test]
+fn invalid_query_form_shows_error_and_preserves_input() {
+    let services = test_services();
+    add_test_node(&services, "pacs", "PACSAE");
+    let mut app = TuiApp::new(services.services.clone());
+    app.refresh_all().unwrap();
+
+    let mut form = QueryFormState::new(services.get_node("pacs").unwrap());
+    form.patient_id = "PAT123".to_string();
+    form.date_from = "20250102".to_string();
+    form.date_to = "20250101".to_string();
+
+    let keep = app
+        .handle_query_form_key(&mut form, key(KeyCode::Enter))
+        .unwrap();
+
+    assert!(keep);
+    assert!(form.error.as_deref().unwrap_or("").contains("date"));
+    assert_eq!(form.patient_id, "PAT123");
+    assert_eq!(form.date_from, "20250102");
+    assert_eq!(form.date_to, "20250101");
+}
+
+#[test]
+fn invalid_import_form_shows_error_and_preserves_input() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    let mut form = ImportFormState::new();
+    form.path = "/this/does/not/exist".to_string();
+
+    let keep = app
+        .handle_import_form_key(&mut form, key(KeyCode::Enter))
+        .unwrap();
+
+    assert!(keep);
+    assert!(form.error.is_some());
+    assert_eq!(form.path, "/this/does/not/exist");
+}
+
+#[test]
+fn invalid_send_form_shows_error_and_preserves_input() {
+    let services = test_services();
+    add_test_node(&services, "pacs", "PACSAE");
+    let mut app = TuiApp::new(services.services.clone());
+
+    let mut form = SendFormState::new();
+    form.destination_node = "".to_string();
+    form.uid = "not-a-uid".to_string();
+
+    let keep = app
+        .handle_send_form_key(&mut form, key(KeyCode::Enter))
+        .unwrap();
+
+    assert!(keep);
+    assert!(form.error.as_deref().unwrap_or("").contains("UID"));
+    assert_eq!(form.uid, "not-a-uid");
+}
+
+#[test]
+fn invalid_storage_scp_form_shows_error_and_preserves_input() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    let mut form = StorageScpFormState::from_config(&services.services.config);
+    form.port = "99999".to_string();
+    form.local_ae_title = "bad ae".to_string();
+
+    let keep = app
+        .handle_storage_scp_form_key(&mut form, key(KeyCode::Enter))
+        .unwrap();
+
+    assert!(keep);
+    assert!(form.error.is_some());
+    assert_eq!(form.port, "99999");
+    assert_eq!(form.local_ae_title, "bad ae");
 }

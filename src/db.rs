@@ -1,7 +1,114 @@
-use std::path::{Path, PathBuf};
+use std::{
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Statement};
+
+pub(crate) struct InstanceImportStatements<'conn> {
+    instance_exists: Statement<'conn>,
+    upsert_instance: Statement<'conn>,
+}
+
+impl<'conn> InstanceImportStatements<'conn> {
+    pub(crate) fn prepare(conn: &'conn Connection) -> Result<Self> {
+        let instance_exists = conn.prepare(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM local_instances
+                WHERE sop_instance_uid = ?1 OR sha256 = ?2
+            )
+            "#,
+        )?;
+
+        let upsert_instance = conn.prepare(
+            r#"
+            INSERT INTO local_instances (
+                sop_instance_uid,
+                study_instance_uid,
+                series_instance_uid,
+                sop_class_uid,
+                transfer_syntax_uid,
+                patient_id,
+                patient_name,
+                accession_number,
+                study_date,
+                study_description,
+                series_description,
+                series_number,
+                modality,
+                instance_number,
+                file_size_bytes,
+                sha256,
+                source_path,
+                managed_path,
+                imported_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+            )
+            ON CONFLICT(sop_instance_uid) DO UPDATE SET
+                study_instance_uid = excluded.study_instance_uid,
+                series_instance_uid = excluded.series_instance_uid,
+                sop_class_uid = excluded.sop_class_uid,
+                transfer_syntax_uid = excluded.transfer_syntax_uid,
+                patient_id = excluded.patient_id,
+                patient_name = excluded.patient_name,
+                accession_number = excluded.accession_number,
+                study_date = excluded.study_date,
+                study_description = excluded.study_description,
+                series_description = excluded.series_description,
+                series_number = excluded.series_number,
+                modality = excluded.modality,
+                instance_number = excluded.instance_number,
+                file_size_bytes = excluded.file_size_bytes,
+                sha256 = excluded.sha256,
+                source_path = excluded.source_path,
+                managed_path = excluded.managed_path,
+                imported_at = excluded.imported_at
+            "#,
+        )?;
+
+        Ok(Self {
+            instance_exists,
+            upsert_instance,
+        })
+    }
+
+    fn instance_exists(&mut self, sop_instance_uid: &str, sha256: &str) -> Result<bool> {
+        let exists: i64 = self
+            .instance_exists
+            .query_row(params![sop_instance_uid, sha256], |row| row.get(0))?;
+        Ok(exists != 0)
+    }
+
+    fn upsert_instance(&mut self, instance: &LocalInstance) -> Result<()> {
+        self.upsert_instance.execute(params![
+            instance.sop_instance_uid,
+            instance.study_instance_uid,
+            instance.series_instance_uid,
+            instance.sop_class_uid,
+            instance.transfer_syntax_uid,
+            instance.patient_id,
+            instance.patient_name,
+            instance.accession_number,
+            instance.study_date,
+            instance.study_description,
+            instance.series_description,
+            instance.series_number,
+            instance.modality,
+            instance.instance_number,
+            instance.file_size_bytes as i64,
+            instance.sha256,
+            instance.source_path,
+            instance.managed_path,
+            instance.imported_at,
+        ])?;
+        Ok(())
+    }
+}
 
 use crate::{
     error::Result,
@@ -50,7 +157,26 @@ impl Database {
     fn connection(&self) -> Result<Connection> {
         let conn = Connection::open(&self.path)
             .with_context(|| format!("opening database {}", self.path.display()))?;
+        Self::init_connection_pragmas(&conn)?;
         Ok(conn)
+    }
+
+    fn init_connection_pragmas(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
+            "#,
+        )?;
+        Ok(())
+    }
+
+    pub fn with_transaction<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let out = f(tx.deref())?;
+        tx.commit()?;
+        Ok(out)
     }
 
     pub fn init(&self) -> Result<()> {
@@ -198,6 +324,14 @@ impl Database {
         Ok(affected)
     }
 
+    pub(crate) fn instance_exists_with_statements(
+        stmts: &mut InstanceImportStatements<'_>,
+        sop_instance_uid: &str,
+        sha256: &str,
+    ) -> Result<bool> {
+        stmts.instance_exists(sop_instance_uid, sha256)
+    }
+
     pub fn instance_exists(&self, sop_instance_uid: &str, sha256: &str) -> Result<bool> {
         let conn = self.connection()?;
         let exists: i64 = conn.query_row(
@@ -212,6 +346,13 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(exists != 0)
+    }
+
+    pub(crate) fn upsert_instance_with_statements(
+        stmts: &mut InstanceImportStatements<'_>,
+        instance: &LocalInstance,
+    ) -> Result<()> {
+        stmts.upsert_instance(instance)
     }
 
     pub fn upsert_instance(&self, instance: &LocalInstance) -> Result<()> {
@@ -352,6 +493,72 @@ impl Database {
                 series_number: row.get(3)?,
                 series_description: row.get(4)?,
                 instance_count: row.get(5)?,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_instances_for_series(
+        &self,
+        series_instance_uid: &str,
+    ) -> Result<Vec<LocalInstance>> {
+        let conn = self.connection()?;
+        let instance_number_order = sqlite_integer_text_order("instance_number");
+        let query = format!(
+            r#"
+            SELECT
+                study_instance_uid,
+                series_instance_uid,
+                sop_instance_uid,
+                sop_class_uid,
+                transfer_syntax_uid,
+                patient_id,
+                patient_name,
+                accession_number,
+                study_date,
+                study_description,
+                series_description,
+                series_number,
+                modality,
+                instance_number,
+                file_size_bytes,
+                sha256,
+                source_path,
+                managed_path,
+                imported_at
+            FROM local_instances
+            WHERE series_instance_uid = ?1
+            ORDER BY {instance_number_order}, sop_instance_uid
+            "#
+        );
+
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(params![series_instance_uid], |row| {
+            Ok(LocalInstance {
+                study_instance_uid: row.get(0)?,
+                series_instance_uid: row.get(1)?,
+                sop_instance_uid: row.get(2)?,
+                sop_class_uid: row.get(3)?,
+                transfer_syntax_uid: row.get(4)?,
+                patient_id: row.get(5)?,
+                patient_name: row.get(6)?,
+                accession_number: row.get(7)?,
+                study_date: row.get(8)?,
+                study_description: row.get(9)?,
+                series_description: row.get(10)?,
+                series_number: row.get(11)?,
+                modality: row.get(12)?,
+                instance_number: row.get(13)?,
+                file_size_bytes: row.get::<_, i64>(14)? as u64,
+                sha256: row.get(15)?,
+                source_path: row.get(16)?,
+                managed_path: row.get(17)?,
+                imported_at: row.get(18)?,
             })
         })?;
 
@@ -534,6 +741,23 @@ mod tests {
             }
             other => panic!("unexpected sqlite error type: {other:?}"),
         }
+    }
+
+    #[test]
+    fn connection_enables_foreign_keys() {
+        let root = unique_temp_dir("rusty-dicom-node-db-test");
+        let db_path = root.join("rusty-dicom-node.sqlite3");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let db = Database::open(&db_path).expect("open temp db");
+
+        let conn = db.connection().expect("open configured connection");
+        let foreign_keys_enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys pragma");
+
+        assert_eq!(foreign_keys_enabled, 1);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

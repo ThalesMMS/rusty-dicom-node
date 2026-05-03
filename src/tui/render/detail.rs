@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::models::LocalInstance;
+
 /// Renders the detail pane for the given area based on the view's current focus and selection.
 ///
 /// The function determines an appropriate title and textual content for the detail pane (nodes,
@@ -23,7 +25,20 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
             ),
         },
         FocusPane::Local => {
-            if view.local_drill_down {
+            if view.local_instance_drill_down {
+                match view
+                    .selected_local_instance
+                    .and_then(|index| view.local_instances.get(index))
+                {
+                    Some(instance) => ("Instance Detail", format_instance_detail(instance)),
+                    None => (
+                        "Instance Detail",
+                        detail_placeholder_text(
+                            "Select an instance to inspect it, or return to series with Esc.",
+                        ),
+                    ),
+                }
+            } else if view.local_drill_down {
                 let parent_study = view
                     .drill_down_study_uid
                     .as_deref()
@@ -91,7 +106,7 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
                 ),
             ),
         },
-        FocusPane::Logs | FocusPane::Input => (
+        FocusPane::Config | FocusPane::Logs | FocusPane::Tasks | FocusPane::Input => (
             "Detail",
             detail_placeholder_text(
                 "The detail pane follows the active Remote Nodes, Local, and Query panes.",
@@ -102,7 +117,8 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
     frame.render_widget(
         Paragraph::new(content)
             .block(Block::bordered().title(title))
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((view.detail_scroll, 0)),
         area,
     );
 }
@@ -297,6 +313,50 @@ pub(in crate::tui) fn format_series_detail(
     ])
 }
 
+pub(in crate::tui) fn format_instance_detail(instance: &LocalInstance) -> Text<'static> {
+    let mut lines = vec![
+        detail_line("SOP Instance UID", instance.sop_instance_uid.clone()),
+        detail_line("SOP Class UID", instance.sop_class_uid.clone()),
+        detail_line(
+            "Transfer Syntax UID",
+            display_optional_detail(instance.transfer_syntax_uid.as_deref(), "-"),
+        ),
+        detail_line(
+            "Modality",
+            display_optional_detail(instance.modality.as_deref(), "-"),
+        ),
+        detail_line(
+            "Instance Number",
+            display_optional_detail(instance.instance_number.as_deref(), "-"),
+        ),
+        detail_line(
+            "Series Number",
+            display_optional_detail(instance.series_number.as_deref(), "-"),
+        ),
+        detail_line(
+            "Series Description",
+            display_optional_detail(instance.series_description.as_deref(), "-"),
+        ),
+        detail_line(
+            "Study Description",
+            display_optional_detail(instance.study_description.as_deref(), "-"),
+        ),
+    ];
+
+    lines.push(Line::from(""));
+    lines.push(detail_section_heading("Storage:"));
+    lines.push(detail_line("Managed Path", instance.managed_path.clone()));
+    lines.push(detail_line("Source Path", instance.source_path.clone()));
+    lines.push(detail_line(
+        "Size (bytes)",
+        instance.file_size_bytes.to_string(),
+    ));
+    lines.push(detail_line("SHA-256", instance.sha256.clone()));
+    lines.push(detail_line("Imported At", instance.imported_at.clone()));
+
+    Text::from(lines)
+}
+
 /// Formats a query result into a multiline `Text` suitable for the detail pane.
 ///
 /// Includes the query `Level`, optional `Query Node` information when `context_node` is
@@ -418,12 +478,17 @@ pub(in crate::tui) fn detail_placeholder_text(message: &str) -> Text<'static> {
 /// let _line = detail_line("Name", "Alice");
 /// ```
 pub(in crate::tui) fn detail_line(label: &str, value: impl Into<String>) -> Line<'static> {
+    // Add a small indentation before the value so wrapped lines align visually under the value
+    // rather than restarting at column 0.
     Line::from(vec![
         Span::styled(
             format!("{label}: "),
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw(value.into()),
+        // Trailing spaces are preserved by ratatui's text wrapping; these encourage subsequent
+        // wrapped lines to align under the value portion for a simple "hanging indent" effect.
+        Span::raw("  "),
     ])
 }
 

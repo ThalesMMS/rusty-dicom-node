@@ -21,6 +21,7 @@ The repository has not published a GitHub release yet, so changes accumulate und
 - Added CI prerelease evidence output and GitHub Release assets with pinned Rust toolchain version, target triple, source archive, and SHA256 checksum.
 - Documented the current prerelease-only release posture in `README.md`
 - Added `docs/release-checklist.md` with versioning guidance, prerelease steps, and stable-release gates
+- Made long-running TUI operations (query/retrieve/import/send) run as background tasks with queued/running/succeeded/failed lifecycle, task log streaming, and a Tasks pane/modal for inspecting per-task logs and errors.
 
 ### Changed
 - Improved migration checks for legacy prerelease data locations.

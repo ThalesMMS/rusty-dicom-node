@@ -4,7 +4,9 @@ mod input;
 mod modal_handlers;
 mod navigation;
 mod render_text;
+mod responsive;
 mod state;
+mod tracing;
 
 mod prelude {
     pub(super) use super::super::input::COMMAND_HISTORY_LIMIT;

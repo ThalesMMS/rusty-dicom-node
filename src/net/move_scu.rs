@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+
 use anyhow::{anyhow, Context};
 use dicom_dictionary_std::tags;
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
@@ -5,6 +7,7 @@ use dicom_ul::pdu::{PDataValue, PDataValueType, Pdu};
 use tracing::warn;
 
 use crate::{
+    cancel,
     config::now_utc_string,
     dicom::{
         build_move_identifier, ensure_study_for_series_or_image, read_u32_opt_from_mem,
@@ -29,12 +32,32 @@ impl MoveScu {
     }
 
     pub fn retrieve(&self, node: &RemoteNode, request: &MoveRequest) -> Result<MoveOutcome> {
+        self.retrieve_with_cancel(node, request, None)
+    }
+
+    pub fn retrieve_cancellable(
+        &self,
+        node: &RemoteNode,
+        request: &MoveRequest,
+        cancel_flag: &AtomicBool,
+    ) -> Result<MoveOutcome> {
+        self.retrieve_with_cancel(node, request, Some(cancel_flag))
+    }
+
+    fn retrieve_with_cancel(
+        &self,
+        node: &RemoteNode,
+        request: &MoveRequest,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<MoveOutcome> {
+        cancel::ensure_not_cancelled(cancel_flag)?;
         ensure_study_for_series_or_image(request)?;
 
         let mut association = self
             .association_factory
             .establish_with_abstract_syntaxes(node, [request.model.move_sop_class_uid()])?;
 
+        cancel::ensure_not_cancelled(cancel_flag)?;
         let context = self.association_factory.first_context(&association)?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
@@ -74,6 +97,7 @@ impl MoveScu {
         let mut awaiting_identifier_status = None;
 
         loop {
+            cancel::ensure_not_cancelled(cancel_flag)?;
             match association.receive()? {
                 Pdu::PData { data } => {
                     if data.is_empty() {

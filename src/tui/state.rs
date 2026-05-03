@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::{
-    models::{QueryMatch, QueryModel, RemoteNode, SeriesSummary, StudySummary},
+    models::{LocalInstance, QueryMatch, QueryModel, RemoteNode, SeriesSummary, StudySummary},
     services::{AppServices, TuiStatusSnapshot},
 };
 
@@ -14,15 +14,23 @@ use super::{
     editor::CommandEditor,
     forms::ModalState,
     render::truncate_path,
-    tasks::{RunningTask, RunningTaskView, TaskRunner},
+    tasks::{RunningTask, RunningTaskView, TaskId, TaskInfo, TaskRunner},
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TaskListScope {
+    Queued,
+    History,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FocusPane {
     Nodes,
     Query,
     Local,
+    Config,
     Logs,
+    Tasks,
     Input,
 }
 
@@ -31,8 +39,10 @@ impl FocusPane {
         match self {
             FocusPane::Nodes => FocusPane::Query,
             FocusPane::Query => FocusPane::Local,
-            FocusPane::Local => FocusPane::Logs,
-            FocusPane::Logs => FocusPane::Input,
+            FocusPane::Local => FocusPane::Config,
+            FocusPane::Config => FocusPane::Logs,
+            FocusPane::Logs => FocusPane::Tasks,
+            FocusPane::Tasks => FocusPane::Input,
             FocusPane::Input => FocusPane::Nodes,
         }
     }
@@ -42,8 +52,10 @@ impl FocusPane {
             FocusPane::Nodes => FocusPane::Input,
             FocusPane::Query => FocusPane::Nodes,
             FocusPane::Local => FocusPane::Query,
-            FocusPane::Logs => FocusPane::Local,
-            FocusPane::Input => FocusPane::Logs,
+            FocusPane::Config => FocusPane::Local,
+            FocusPane::Logs => FocusPane::Config,
+            FocusPane::Tasks => FocusPane::Logs,
+            FocusPane::Input => FocusPane::Tasks,
         }
     }
 }
@@ -58,16 +70,36 @@ pub(super) struct TuiView {
     pub(super) selected_local_study: Option<usize>,
     pub(super) local_series: Vec<SeriesSummary>,
     pub(super) selected_local_series: Option<usize>,
+    pub(super) local_instances: Vec<LocalInstance>,
+    pub(super) selected_local_instance: Option<usize>,
     pub(super) local_drill_down: bool,
     pub(super) drill_down_study_uid: Option<String>,
+    pub(super) local_instance_drill_down: bool,
     pub(super) query_results: Vec<QueryMatch>,
     pub(super) selected_query_result: Option<usize>,
     pub(super) query_context_node: Option<RemoteNode>,
     pub(super) query_context_node_name: Option<String>,
+    pub(super) detail_scroll: u16,
     pub(super) input_content: String,
     pub(super) input_cursor: usize,
     pub(super) logs: Vec<String>,
     pub(super) running_task: Option<RunningTaskView>,
+    pub(super) queued_tasks: Vec<TaskInfo>,
+    #[allow(
+        dead_code,
+        reason = "view exposes task history for renderer/tests before the task pane renders it"
+    )]
+    pub(super) task_history: Vec<TaskInfo>,
+    #[allow(
+        dead_code,
+        reason = "view exposes task selection for renderer/tests before the task pane renders it"
+    )]
+    pub(super) selected_task: Option<usize>,
+    #[allow(
+        dead_code,
+        reason = "view exposes task selection scope for renderer/tests before the task pane renders it"
+    )]
+    pub(super) selected_task_scope: TaskListScope,
     pub(super) show_help: bool,
     pub(super) modal: Option<ModalState>,
 }
@@ -83,18 +115,28 @@ pub(super) struct TuiApp {
     pub(super) selected_local_study: Option<usize>,
     pub(super) local_series: Vec<SeriesSummary>,
     pub(super) selected_local_series: Option<usize>,
+    pub(super) local_instances: Vec<LocalInstance>,
+    pub(super) selected_local_instance: Option<usize>,
     pub(super) local_drill_down: bool,
     pub(super) drill_down_study_uid: Option<String>,
+    pub(super) local_instance_drill_down: bool,
     pub(super) query_results: Vec<QueryMatch>,
     pub(super) selected_query_result: Option<usize>,
     pub(super) query_context_node: Option<RemoteNode>,
     pub(super) query_context_model: QueryModel,
+    pub(super) detail_scroll: u16,
     pub(super) editor: CommandEditor,
     pub(super) history: VecDeque<String>,
     pub(super) history_index: Option<usize>,
     pub(super) draft: String,
     pub(super) logs: Vec<String>,
     pub(super) running_task: Option<RunningTask>,
+    pub(super) queued_tasks: VecDeque<TaskInfo>,
+    pub(super) task_history: VecDeque<TaskInfo>,
+    pub(super) selected_task: Option<usize>,
+    pub(super) selected_task_scope: TaskListScope,
+    pub(super) task_logs: VecDeque<(TaskId, String)>,
+    pub(super) last_task_error: Option<String>,
     pub(super) show_help: bool,
     pub(super) modal: Option<ModalState>,
     pub(super) should_quit: bool,

@@ -1,20 +1,30 @@
 use super::prelude::*;
 
-// ── state.rs coverage: FocusPane, selection helpers ──────────────────────────
+// ── state.rs coverage: FocusPane, selection helpers, task selection types ───
+
+#[test]
+fn task_list_scope_variants_are_comparable() {
+    assert_eq!(TaskListScope::Queued, TaskListScope::Queued);
+    assert_ne!(TaskListScope::Queued, TaskListScope::History);
+}
 
 #[test]
 fn focus_pane_next_cycles_through_all_variants() {
     assert_eq!(FocusPane::Input.next(), FocusPane::Nodes);
     assert_eq!(FocusPane::Nodes.next(), FocusPane::Query);
     assert_eq!(FocusPane::Query.next(), FocusPane::Local);
-    assert_eq!(FocusPane::Local.next(), FocusPane::Logs);
-    assert_eq!(FocusPane::Logs.next(), FocusPane::Input);
+    assert_eq!(FocusPane::Local.next(), FocusPane::Config);
+    assert_eq!(FocusPane::Config.next(), FocusPane::Logs);
+    assert_eq!(FocusPane::Logs.next(), FocusPane::Tasks);
+    assert_eq!(FocusPane::Tasks.next(), FocusPane::Input);
 }
 
 #[test]
 fn focus_pane_previous_cycles_backwards_through_all_variants() {
-    assert_eq!(FocusPane::Input.previous(), FocusPane::Logs);
-    assert_eq!(FocusPane::Logs.previous(), FocusPane::Local);
+    assert_eq!(FocusPane::Input.previous(), FocusPane::Tasks);
+    assert_eq!(FocusPane::Tasks.previous(), FocusPane::Logs);
+    assert_eq!(FocusPane::Logs.previous(), FocusPane::Config);
+    assert_eq!(FocusPane::Config.previous(), FocusPane::Local);
     assert_eq!(FocusPane::Local.previous(), FocusPane::Query);
     assert_eq!(FocusPane::Query.previous(), FocusPane::Nodes);
     assert_eq!(FocusPane::Nodes.previous(), FocusPane::Input);

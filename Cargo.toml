@@ -2,7 +2,7 @@
 name = "dicom-node-client"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 authors = ["Thales Matheus <133025183+ThalesMMS@users.noreply.github.com>"]
 description = "Terminal-first DICOM node client built with dicom-rs"
 license = "MIT OR Apache-2.0"
@@ -42,3 +42,4 @@ dicom-ul = "0.9.1"
 
 [dev-dependencies]
 tempfile = "3"
+tracing-test = "0.2"

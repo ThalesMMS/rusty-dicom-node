@@ -1,5 +1,29 @@
 use super::*;
 
+pub(in crate::tui) fn render_task_inspect_modal(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &TaskInspectState,
+) {
+    let modal_area = centered_rect(
+        area,
+        area.width.saturating_sub(8).min(110),
+        area.height.saturating_sub(6).min(32),
+    );
+
+    frame.render_widget(Clear, modal_area);
+    frame.render_widget(
+        Paragraph::new(state.content.clone())
+            .block(
+                Block::default()
+                    .title(state.title.as_str())
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false }),
+        modal_area,
+    );
+}
+
 /// Render a centered help modal showing the view's help text.
 ///
 /// The modal is cleared and a bordered, wrapped paragraph titled "Help" is drawn
@@ -55,6 +79,9 @@ pub(in crate::tui) fn render_help_modal(frame: &mut Frame<'_>, area: Rect, view:
 /// ```
 pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &ModalState) {
     match modal {
+        ModalState::TaskInspect(state) => {
+            render_task_inspect_modal(frame, area, state);
+        }
         ModalState::AddNode(form) | ModalState::EditNode(form) => {
             let modal_area = centered_rect(area, area.width.saturating_sub(20).min(82), 17);
             frame.render_widget(Clear, modal_area);
@@ -101,6 +128,44 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
                     .block(
                         Block::default()
                             .title("Retrieve Matches")
+                            .borders(Borders::ALL),
+                    )
+                    .wrap(Wrap { trim: false }),
+                modal_area,
+            );
+        }
+        ModalState::Import(form) => {
+            let modal_area = centered_rect(area, area.width.saturating_sub(18).min(86), 9);
+            frame.render_widget(Clear, modal_area);
+            frame.render_widget(
+                Paragraph::new(render_import_form_text(form))
+                    .block(
+                        Block::default()
+                            .title("Import Local Files")
+                            .borders(Borders::ALL),
+                    )
+                    .wrap(Wrap { trim: false }),
+                modal_area,
+            );
+        }
+        ModalState::Send(form) => {
+            let modal_area = centered_rect(area, area.width.saturating_sub(18).min(86), 11);
+            frame.render_widget(Clear, modal_area);
+            frame.render_widget(
+                Paragraph::new(render_send_form_text(form))
+                    .block(Block::default().title(form.title()).borders(Borders::ALL))
+                    .wrap(Wrap { trim: false }),
+                modal_area,
+            );
+        }
+        ModalState::StorageScp(form) => {
+            let modal_area = centered_rect(area, area.width.saturating_sub(18).min(90), 16);
+            frame.render_widget(Clear, modal_area);
+            frame.render_widget(
+                Paragraph::new(render_storage_scp_form_text(form))
+                    .block(
+                        Block::default()
+                            .title("Storage SCP Settings")
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: false }),
@@ -397,6 +462,121 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
     Text::from(lines)
 }
 
+pub(in crate::tui) fn render_import_form_text(form: &ImportFormState) -> Text<'static> {
+    let mut lines = vec![
+        Line::from("Select a local file, directory, or zip to import into the local index."),
+        Line::from(""),
+        form_field_line(
+            form.active == ImportField::Path,
+            "Path",
+            display_text_field(&form.path, "folder|file|zip"),
+        ),
+        Line::from(""),
+        Line::from("Type to edit. Enter starts import. Esc cancels."),
+    ];
+
+    if let Some(error) = &form.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Error: {error}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    Text::from(lines)
+}
+
+pub(in crate::tui) fn render_send_form_text(form: &SendFormState) -> Text<'static> {
+    let mut lines = vec![
+        Line::from("Send local data to a configured remote node."),
+        Line::from(""),
+        form_field_line(
+            form.active == SendField::Kind,
+            "Kind",
+            match form.kind {
+                SendKind::Study => "study".to_string(),
+                SendKind::Series => "series".to_string(),
+            },
+        ),
+        form_field_line(
+            form.active == SendField::Uid,
+            match form.kind {
+                SendKind::Study => "Study UID",
+                SendKind::Series => "Series UID",
+            },
+            display_text_field(&form.uid, "required"),
+        ),
+        form_field_line(
+            form.active == SendField::DestinationNode,
+            "Destination node",
+            display_text_field(&form.destination_node, "required"),
+        ),
+        Line::from(""),
+        Line::from("Type to edit. Left/Right/Space cycle kind. Enter starts send. Esc cancels."),
+    ];
+
+    if let Some(error) = &form.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Error: {error}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    Text::from(lines)
+}
+
+pub(in crate::tui) fn render_storage_scp_form_text(form: &StorageScpFormState) -> Text<'static> {
+    let mut lines = vec![
+        Line::from("Edit local Storage SCP settings (saved to config.json)."),
+        Line::from(""),
+        form_field_line(
+            form.active == StorageScpField::LocalAeTitle,
+            "Local AE",
+            display_text_field(&form.local_ae_title, "required"),
+        ),
+        form_field_line(
+            form.active == StorageScpField::BindAddr,
+            "Bind addr",
+            display_text_field(&form.bind_addr, "required"),
+        ),
+        form_field_line(
+            form.active == StorageScpField::Port,
+            "Port",
+            display_text_field(&form.port, "required"),
+        ),
+        form_field_line(
+            form.active == StorageScpField::AllowPromiscuous,
+            "Promiscuous",
+            display_toggle_field(form.allow_promiscuous_storage, "y", "n"),
+        ),
+        form_field_line(
+            form.active == StorageScpField::StrictPdu,
+            "Strict PDU",
+            display_toggle_field(form.strict_pdu, "y", "n"),
+        ),
+        form_field_line(
+            form.active == StorageScpField::MaxPduLength,
+            "Max PDU",
+            display_text_field(&form.max_pdu_length, "required"),
+        ),
+        Line::from(""),
+        Line::from(
+            "Type to edit. Space toggles checkboxes. Tab/Shift-Tab or Up/Down move fields. Enter saves. Esc cancels.",
+        ),
+    ];
+
+    if let Some(error) = &form.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Error: {error}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    Text::from(lines)
+}
+
 /// Compute a rectangle of the requested size centered inside `area`, clamping the
 /// requested width and height to fit within `area` (width limited to at most
 /// `area.width - 2` and at least 10; height limited to at most `area.height - 2`
@@ -457,6 +637,17 @@ pub(in crate::tui) fn form_field_line(active: bool, label: &str, value: String) 
     };
     let prefix = if active { "> " } else { "  " };
     Line::from(Span::styled(format!("{prefix}{label}: {value}"), style))
+}
+
+/// Display a boolean toggle as "On"/"Off" with an optional hint when unset.
+///
+/// `label_on`/`label_off` allow callers to choose wording (e.g. Yes/No, Enabled/Disabled).
+pub(in crate::tui) fn display_toggle_field(value: bool, label_on: &str, label_off: &str) -> String {
+    if value {
+        label_on.to_string()
+    } else {
+        label_off.to_string()
+    }
 }
 
 /// Formats a text field for display, showing a placeholder when the value is empty.

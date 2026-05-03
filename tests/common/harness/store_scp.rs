@@ -30,6 +30,7 @@ pub struct ReceivedStore {
     pub sop_class_uid: String,
     pub sop_instance_uid: String,
     pub dataset_bytes: Vec<u8>,
+    pub dataset_pdv_count: usize,
 }
 
 #[derive(Debug)]
@@ -203,6 +204,7 @@ fn handle_store_connection(
                         sop_class_uid: sop_class_uid.clone(),
                         sop_instance_uid: sop_instance_uid.clone(),
                         dataset_bytes: message.dataset_bytes,
+                        dataset_pdv_count: message.dataset_pdv_count,
                     });
 
                 let response = create_store_response(

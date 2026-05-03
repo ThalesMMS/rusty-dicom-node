@@ -10,7 +10,10 @@ fn draw_ui_sets_command_cursor_from_display_width() {
 
     let backend = ratatui::backend::TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| draw_ui(frame, &view)).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
 
     terminal.backend_mut().assert_cursor_position((4, 17));
 }
@@ -25,7 +28,10 @@ fn draw_ui_does_not_render_help_over_active_modal() {
 
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| draw_ui(frame, &view)).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
 
     let rendered = terminal
         .backend()
@@ -41,7 +47,7 @@ fn draw_ui_does_not_render_help_over_active_modal() {
 
 #[test]
 fn formatting_helpers_compact_rows_and_status_lines() {
-    assert_eq!(truncate_uid("1234567890", 6), "...890");
+    assert_eq!(truncate_uid("1234567890", 6), "…67890");
     assert_eq!(pad_or_truncate("CT", 4), "CT  ");
     assert_eq!(pad_or_truncate("PATIENT-NAME", 7), "PATIENT");
 
@@ -155,7 +161,7 @@ fn truncate_uid_exact_length_unchanged() {
 
 #[test]
 fn truncate_uid_longer_than_max_truncates_with_ellipsis() {
-    assert_eq!(truncate_uid("1234567890", 7), "...7890");
+    assert_eq!(truncate_uid("1234567890", 7), "…567890");
 }
 
 #[test]

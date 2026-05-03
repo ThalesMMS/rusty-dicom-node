@@ -30,7 +30,7 @@ Until the first tagged prerelease exists, the supported installation path is a l
 
 Prerequisites:
 
-- Rust 1.75 or newer
+- Rust 1.88 or newer
 - Cargo
 - A C compiler for the bundled SQLite dependency used by `rusqlite`
 
@@ -79,6 +79,34 @@ Start the TUI:
 
 ```bash
 cargo run -- tui
+```
+
+### TUI panes
+
+Most list panes now include a right-side header counter showing the current selection and total items (for example `3/120`, or `-/0` when nothing is selected or the list is empty). When a list contains more items than can fit in the current pane height, the UI shows small up/down indicators (`▲` / `▼`) to hint that more items exist off-screen.
+
+The Logs pane header shows how many log entries are visible vs total, and indicates when older entries are hidden by the visible window ("capped").
+
+Background tasks (query/retrieve/import/send) run without freezing the UI. While a task is running, the footer shows a spinner + elapsed time and how many tasks are queued.
+
+A Tasks pane is available for inspecting queued and recently finished tasks:
+
+- Press `Tab` until the Tasks pane is focused.
+- Use `Up/Down` (or `j/k`) to select a task.
+- Press `t` to toggle between queued tasks and task history.
+- Press `Enter` to open a task details modal, including per-task logs and the final status.
+
+Tasks pane: focus, navigation, toggle, details
+
+```text
+Footer: / Running query node=pacs... 00:03 | 2 queued
+
+[Tab] Tasks
+> #12 Running  Querying pacs...       00:03
+  #13 Queued   Retrieving from pacs...
+  #14 Queued   Importing ./incoming...
+
+Up/Down or j/k move selection  |  t queued/history  |  Enter details
 ```
 
 Then enter commands at the bottom prompt:
@@ -222,7 +250,7 @@ hyphenated commands `send-study` and `send-series`.
 
 ## Known Limitations
 
-- Long-running DICOM operations use synchronous I/O and may block the TUI until the operation completes.
+- Long-running DICOM operations run as background tasks so the TUI stays responsive, but most operations are not currently interruptible once started (cancellation marks the task as cancelled before it begins, or as a user intent).
 - See `docs/dicom-node-client_github_issues.md` for the broader roadmap and release-blocking work.
 
 ## Layout
