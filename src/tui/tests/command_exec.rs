@@ -1,24 +1,6 @@
 use super::prelude::*;
 
 #[test]
-fn busy_guard_blocks_command_dispatch_before_argument_validation() {
-    let services = test_services();
-    let mut app = TuiApp::new(services.services.clone());
-    app.running_task = Some(RunningTask {
-        description: "Importing inbox...".to_string(),
-        started_at: Instant::now(),
-    });
-
-    app.exec_import(&[]).unwrap();
-
-    assert!(app
-        .logs
-        .last()
-        .expect("busy log")
-        .contains("Please wait for the current operation to complete"));
-}
-
-#[test]
 fn import_command_rejects_missing_path_before_starting_task() {
     let services = test_services();
     let missing_path = services.paths.base_dir.join("missing");
@@ -149,6 +131,32 @@ fn execute_command_refresh_logs_refreshed() {
 }
 
 #[test]
+fn execute_command_cancel_logs_when_no_active_task() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    app.execute_command("cancel").unwrap();
+
+    assert_eq!(
+        app.logs.last().map(String::as_str),
+        Some("No active task to cancel (nothing is running)")
+    );
+}
+
+#[test]
+fn execute_command_stop_alias_routes_to_cancel() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    app.execute_command("stop").unwrap();
+
+    assert_eq!(
+        app.logs.last().map(String::as_str),
+        Some("No active task to cancel (nothing is running)")
+    );
+}
+
+#[test]
 fn execute_command_unknown_returns_error() {
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
@@ -193,73 +201,100 @@ fn exec_node_unsupported_subcommand_returns_error() {
 }
 
 #[test]
-fn exec_query_busy_guard_logs_and_returns_ok() {
+fn local_studies_logs_rows() {
     let services = test_services();
+
+    add_test_local_instance(
+        &services,
+        TestInstanceMeta {
+            study_uid: "1.2.3",
+            series_uid: "1.2.3.4",
+            sop_uid: "1.2.3.4.5",
+            series_number: Some("1"),
+            modality: Some("MR"),
+            patient_name: Some("Doe^John"),
+            study_date: Some("20260101"),
+            study_description: Some("Head MRI"),
+            series_description: Some("Axial T1"),
+        },
+    );
+
     let mut app = TuiApp::new(services.services.clone());
-    app.running_task = Some(RunningTask {
-        description: "Working...".to_string(),
-        started_at: Instant::now(),
-    });
 
-    app.exec_query(&[]).unwrap();
+    let before = app.logs.len();
+    app.execute_command("local studies patient_name=Doe")
+        .unwrap();
 
-    assert!(app
-        .logs
-        .last()
-        .expect("log")
-        .contains("Please wait for the current operation to complete"));
+    let new_logs = &app.logs[before..];
+    assert!(
+        new_logs.iter().any(|line| line.contains("1.2.3")),
+        "expected a study row containing the study uid; logs were: {new_logs:?}"
+    );
 }
 
 #[test]
-fn exec_retrieve_busy_guard_logs_and_returns_ok() {
+fn local_series_calls_service_and_updates_state() {
     let services = test_services();
+
+    add_test_local_instance(
+        &services,
+        TestInstanceMeta {
+            study_uid: "1.2.3",
+            series_uid: "1.2.3.4",
+            sop_uid: "1.2.3.4.5",
+            series_number: Some("7"),
+            modality: Some("CT"),
+            patient_name: None,
+            study_date: None,
+            study_description: None,
+            series_description: Some("Local Series"),
+        },
+    );
+
     let mut app = TuiApp::new(services.services.clone());
-    app.running_task = Some(RunningTask {
-        description: "Working...".to_string(),
-        started_at: Instant::now(),
-    });
 
-    app.exec_retrieve(&[]).unwrap();
+    app.execute_command("local series study_uid=1.2.3").unwrap();
 
-    assert!(app
-        .logs
-        .last()
-        .expect("log")
-        .contains("Please wait for the current operation to complete"));
+    assert_eq!(app.focus, FocusPane::Local, "expected Local pane focused");
+    assert_eq!(app.drill_down_study_uid.as_deref(), Some("1.2.3"));
+    assert!(app.local_drill_down, "expected local drill down enabled");
+    assert!(
+        !app.local_series.is_empty(),
+        "expected local series populated"
+    );
 }
 
 #[test]
-fn exec_send_study_busy_guard_logs_and_returns_ok() {
+fn local_instances_calls_service_and_updates_state() {
     let services = test_services();
+
+    add_test_local_instance(
+        &services,
+        TestInstanceMeta {
+            study_uid: "1.2.3",
+            series_uid: "1.2.3.4",
+            sop_uid: "1.2.3.4.5",
+            series_number: None,
+            modality: None,
+            patient_name: None,
+            study_date: None,
+            study_description: None,
+            series_description: None,
+        },
+    );
+
     let mut app = TuiApp::new(services.services.clone());
-    app.running_task = Some(RunningTask {
-        description: "Working...".to_string(),
-        started_at: Instant::now(),
-    });
 
-    app.exec_send_study(&[]).unwrap();
+    app.execute_command("local instances series_uid=1.2.3.4")
+        .unwrap();
 
-    assert!(app
-        .logs
-        .last()
-        .expect("log")
-        .contains("Please wait for the current operation to complete"));
-}
-
-#[test]
-fn exec_send_series_busy_guard_logs_and_returns_ok() {
-    let services = test_services();
-    let mut app = TuiApp::new(services.services.clone());
-    app.running_task = Some(RunningTask {
-        description: "Working...".to_string(),
-        started_at: Instant::now(),
-    });
-
-    app.exec_send_series(&[]).unwrap();
-
-    assert!(app
-        .logs
-        .last()
-        .expect("log")
-        .contains("Please wait for the current operation to complete"));
+    assert_eq!(app.focus, FocusPane::Local, "expected Local pane focused");
+    assert!(
+        app.selected_local_instance.is_some(),
+        "expected selected local instance set"
+    );
+    assert!(
+        !app.local_instances.is_empty(),
+        "expected local instances populated"
+    );
 }

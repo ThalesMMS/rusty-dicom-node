@@ -56,7 +56,11 @@ fn importing_same_file_twice_is_idempotent_and_removes_staged_temp_files() {
 #[test]
 fn retrieving_same_study_twice_keeps_database_and_managed_files_idempotent() {
     run_with_timeout(Duration::from_secs(20), || {
-        let services = TestServices::new().expect("create test services");
+        let services = TestServices::new_with_config(|config| {
+            config.allowed_calling_aet = vec![];
+            config.allowed_peer_ips = vec![];
+        })
+        .expect("create test services");
         let study = create_test_study(
             &services.temp_dir.path().join("retrieve-source"),
             "1.2.826.0.1.3680043.10.204.1",

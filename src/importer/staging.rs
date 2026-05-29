@@ -11,12 +11,6 @@ use uuid::Uuid;
 
 const STAGED_FILE_NAME_FRAGMENT_LIMIT: usize = 96;
 
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
 pub(super) fn stage_reader_with_sha256<R: Read>(
     mut reader: R,
     staging_dir: &Path,
@@ -69,7 +63,12 @@ pub(super) fn stage_reader_with_sha256<R: Read>(
             cleanup.disarm();
             Ok((staged_path, sha256, file_size_bytes))
         }
-        Err(err) => Err(err),
+        Err(err) => {
+            // Ensure partial staged file gets removed.
+            drop(staged_file);
+            drop(cleanup);
+            Err(err)
+        }
     }
 }
 

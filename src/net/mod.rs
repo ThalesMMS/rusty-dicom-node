@@ -1,5 +1,7 @@
 pub mod assoc;
+pub mod dimse_status;
 pub mod find;
+pub mod malformed_response;
 pub mod move_scu;
 pub mod storage_scp;
 pub mod store_scu;

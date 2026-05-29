@@ -22,6 +22,54 @@ pub use move_scp::{MoveFailureMode, MoveScp, MoveScpBuilder, ReceivedMove};
 pub use query_scp::{QueryScp, QueryScpBuilder, ReceivedQuery};
 pub use store_scp::{ReceivedStore, StoreScp, StoreScpBuilder};
 
+pub fn send_dataset_fragments_for_test(
+    association: &mut TestAssociation,
+    presentation_context_id: u8,
+    dataset_bytes: Vec<u8>,
+    fragment_sizes: &[usize],
+) -> anyhow::Result<()> {
+    let mut sizes = fragment_sizes.to_vec();
+    sizes.push(usize::MAX);
+    send_dataset_fragments(
+        association,
+        presentation_context_id,
+        dataset_bytes,
+        Some(&sizes),
+    )
+}
+
+pub fn send_command_fragments_for_test(
+    association: &mut TestAssociation,
+    presentation_context_id: u8,
+    command_bytes: Vec<u8>,
+    fragment_sizes: &[usize],
+) -> anyhow::Result<()> {
+    let mut sizes = fragment_sizes.to_vec();
+    sizes.push(usize::MAX);
+
+    let mut offset = 0usize;
+    for (i, size) in sizes.iter().enumerate() {
+        let end = offset.saturating_add(*size).min(command_bytes.len());
+        let chunk = command_bytes[offset..end].to_vec();
+        offset = end;
+
+        association.send(&Pdu::PData {
+            data: vec![PDataValue {
+                presentation_context_id,
+                value_type: PDataValueType::Command,
+                is_last: i == sizes.len() - 1,
+                data: chunk,
+            }],
+        })?;
+
+        if offset >= command_bytes.len() {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 type TestAssociation = ServerAssociation<TcpStream>;
 
 #[derive(Debug)]
@@ -160,14 +208,40 @@ fn send_command_and_dataset(
     dataset_bytes: Vec<u8>,
 ) -> anyhow::Result<()> {
     send_command(association, presentation_context_id, command)?;
-    association.send(&Pdu::PData {
-        data: vec![PDataValue {
-            presentation_context_id,
-            value_type: PDataValueType::Data,
-            is_last: true,
-            data: dataset_bytes,
-        }],
-    })?;
+    send_dataset_fragments(association, presentation_context_id, dataset_bytes, None)
+}
+
+fn send_dataset_fragments(
+    association: &mut TestAssociation,
+    presentation_context_id: u8,
+    dataset_bytes: Vec<u8>,
+    fragment_sizes: Option<&[usize]>,
+) -> anyhow::Result<()> {
+    let sizes: Vec<usize> = match fragment_sizes {
+        Some(sizes) if !sizes.is_empty() => sizes.to_vec(),
+        _ => vec![dataset_bytes.len()],
+    };
+
+    let mut offset = 0usize;
+    for (i, size) in sizes.iter().enumerate() {
+        let end = offset.saturating_add(*size).min(dataset_bytes.len());
+        let chunk = dataset_bytes[offset..end].to_vec();
+        offset = end;
+
+        association.send(&Pdu::PData {
+            data: vec![PDataValue {
+                presentation_context_id,
+                value_type: PDataValueType::Data,
+                is_last: i == sizes.len() - 1,
+                data: chunk,
+            }],
+        })?;
+
+        if offset >= dataset_bytes.len() {
+            break;
+        }
+    }
+
     Ok(())
 }
 

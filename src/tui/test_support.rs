@@ -50,6 +50,7 @@ pub(super) fn test_services() -> TestServices {
         sqlite_db: base_dir.join("dicom-node-client.sqlite3"),
         managed_store_dir: base_dir.join("store"),
         logs_dir: base_dir.join("logs"),
+        active_log_file: base_dir.join("logs").join("app.log"),
     };
     paths.ensure().unwrap();
 

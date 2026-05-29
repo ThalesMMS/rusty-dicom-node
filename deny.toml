@@ -1,0 +1,72 @@
+# cargo-deny configuration
+#
+# Policy goals:
+# - Keep CI actionable with a conservative baseline.
+# - Prefer permissive/open-source licenses commonly used in the Rust ecosystem.
+# - Restrict dependencies to crates.io only (no git/path registries).
+# - Fail CI on known security advisories by default.
+
+[advisories]
+# Fail CI on vulnerabilities and yanked crates.
+# Note: cargo-deny 0.18+ migrated lint levels to the CLI (`cargo deny check -D ...`).
+# We keep the advisories DB/ignore configuration here; CI controls strictness.
+# (See .github/workflows/ci.yml cargo-deny step.)
+
+# If needed, add advisory IDs (or yanked crate versions) to ignore with rationale comments, e.g.
+# ignore = ["RUSTSEC-0000-0000", "some-yanked-crate@0.1.0"]
+ignore = []
+
+
+[licenses]
+# Common, permissive licenses.
+#
+# Notes on additional allowed licenses:
+# - Unicode-3.0: required by `unicode-ident` (part of the proc-macro ecosystem).
+# - MPL-2.0: currently required by `option-ext`; acceptable here as a *file-level*
+#   copyleft license used by some Rust crates.
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "MPL-2.0",
+]
+
+# If a specific crate has a license expression that is acceptable but not covered
+# above, add it here instead of widening the global allow list.
+exceptions = []
+
+# Confidence threshold for license detection from license text.
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+registries = []
+
+
+[bans]
+# Flag duplicate versions of the same crate.
+multiple-versions = "warn"
+
+# Allow wildcard dependency specifications (this project uses them); the lockfile
+# provides reproducibility in CI.
+wildcards = "allow"
+
+# No crate-level bans yet.
+deny = []
+
+
+[sources]
+# Only allow crates.io sources.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+# Allowed registries (crates.io is implicit; include explicitly for clarity).
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Do not allow git dependencies by default.
+allow-git = []

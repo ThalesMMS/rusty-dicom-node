@@ -4,6 +4,12 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::models::{QueryLevel, QueryModel};
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum LocalExportFormat {
+    Json,
+    Csv,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "dicom-node-client",
@@ -26,6 +32,10 @@ pub enum Commands {
     Query(QueryArgs),
     Retrieve(RetrieveArgs),
     Send {
+        /// Output a final operation summary as JSON (stable schema).
+        #[arg(long)]
+        json: bool,
+
         #[command(subcommand)]
         command: SendCommand,
     },
@@ -33,7 +43,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: LocalCommand,
     },
-    StorageScp,
+    StorageScp {
+        /// Output a final operation summary as JSON (stable schema).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -52,8 +66,116 @@ pub enum SendCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum LocalCommand {
-    Studies,
-    Series { study_instance_uid: String },
+    Studies(LocalStudiesArgs),
+    Series(LocalSeriesArgs),
+}
+
+#[derive(Debug, Args, Default)]
+pub struct LocalStudiesArgs {
+    /// Export results as JSON or CSV.
+    #[arg(long, value_enum)]
+    pub export: Option<LocalExportFormat>,
+
+    /// Output file path. If omitted, writes to stdout.
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+
+    /// Filter by patient name (case-insensitive substring).
+    /// Example: --patient-name smith
+    #[arg(long)]
+    pub patient_name: Option<String>,
+
+    /// Filter by patient ID (case-insensitive substring).
+    /// Example: --patient-id 123
+    #[arg(long)]
+    pub patient_id: Option<String>,
+
+    /// Filter by accession number (case-insensitive substring).
+    /// Example: --accession-number ACC-42
+    #[arg(long)]
+    pub accession_number: Option<String>,
+
+    /// Filter by study description (case-insensitive substring).
+    /// Example: --study-description abdomen
+    #[arg(long)]
+    pub study_description: Option<String>,
+
+    /// Filter by study date. Supports `VALUE`, `START..END`, `..END`, `START..`.
+    /// Dates are compared lexicographically (recommended format: YYYYMMDD).
+    /// Examples:
+    ///   --study-date 20250101
+    ///   --study-date 20250101..20250131
+    ///   --study-date ..20250131
+    ///   --study-date 20250101..
+    #[arg(long)]
+    pub study_date: Option<String>,
+
+    /// Filter by modality. Comma-separated list (e.g. `CT,MR`).
+    /// Example: --modality CT,MR
+    #[arg(long)]
+    pub modality: Option<String>,
+
+    /// Filter by source path (case-insensitive substring).
+    /// Example: --source-path /incoming/site-a/
+    #[arg(long)]
+    pub source_path: Option<String>,
+
+    /// Filter by import timestamp. Supports `VALUE`, `START..END`, `..END`, `START..`.
+    /// Compared lexicographically (recommended format: RFC3339).
+    /// Examples:
+    ///   --imported-at 2025-01-01T00:00:00Z..
+    ///   --imported-at ..2025-01-31T23:59:59Z
+    #[arg(long)]
+    pub imported_at: Option<String>,
+
+    /// Filter by duplicate status.
+    #[arg(long)]
+    pub duplicate: Option<bool>,
+}
+
+#[derive(Debug, Args)]
+pub struct LocalSeriesArgs {
+    /// Export results as JSON or CSV.
+    #[arg(long, value_enum)]
+    pub export: Option<LocalExportFormat>,
+
+    /// Output file path. If omitted, writes to stdout.
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+
+    pub study_instance_uid: String,
+
+    /// Filter by accession number (case-insensitive substring).
+    /// Example: --accession-number ACC-42
+    #[arg(long)]
+    pub accession_number: Option<String>,
+
+    /// Filter by series description (case-insensitive substring).
+    /// Example: --series-description pelvis
+    #[arg(long)]
+    pub series_description: Option<String>,
+
+    /// Filter by modality. Comma-separated list (e.g. `CT,MR`).
+    /// Example: --modality CT,MR
+    #[arg(long)]
+    pub modality: Option<String>,
+
+    /// Filter by source path (case-insensitive substring).
+    /// Example: --source-path /incoming/site-a/
+    #[arg(long)]
+    pub source_path: Option<String>,
+
+    /// Filter by import timestamp. Supports `VALUE`, `START..END`, `..END`, `START..`.
+    /// Compared lexicographically (recommended format: RFC3339).
+    /// Examples:
+    ///   --imported-at 2025-01-01T00:00:00Z..
+    ///   --imported-at ..2025-01-31T23:59:59Z
+    #[arg(long)]
+    pub imported_at: Option<String>,
+
+    /// Filter by duplicate status.
+    #[arg(long)]
+    pub duplicate: Option<bool>,
 }
 
 #[derive(Debug, Args)]
@@ -96,6 +218,10 @@ pub struct NodeDeleteArgs {
 
 #[derive(Debug, Args)]
 pub struct ImportArgs {
+    /// Output a final operation summary as JSON (stable schema).
+    #[arg(long)]
+    pub json: bool,
+
     pub path: PathBuf,
 }
 
@@ -103,6 +229,10 @@ pub struct ImportArgs {
 pub struct QueryArgs {
     #[arg(long)]
     pub node: String,
+
+    /// Output a final operation summary as JSON (stable schema).
+    #[arg(long)]
+    pub json: bool,
     #[arg(long, value_enum, default_value_t = QueryModel::StudyRoot)]
     pub model: QueryModel,
     #[arg(long, value_enum, default_value_t = QueryLevel::Study)]
@@ -133,6 +263,11 @@ pub struct QueryArgs {
 pub struct RetrieveArgs {
     #[arg(long)]
     pub node: String,
+
+    /// Output a final operation summary as JSON (stable schema).
+    #[arg(long)]
+    pub json: bool,
+
     #[arg(long, value_enum, default_value_t = QueryModel::StudyRoot)]
     pub model: QueryModel,
     #[arg(long, value_enum, default_value_t = QueryLevel::Study)]

@@ -1,7 +1,6 @@
 use std::sync::atomic::AtomicBool;
 
 use anyhow::{anyhow, Context};
-use dicom_dictionary_std::tags;
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_ul::pdu::{PDataValue, PDataValueType, Pdu};
 use tracing::warn;
@@ -13,7 +12,13 @@ use crate::{
     models::{QueryCriteria, QueryMatch, RemoteNode},
 };
 
-use super::assoc::{create_find_request_command, AssociationFactory, PDataAccumulator};
+use super::assoc::{
+    classify_assoc_receive_error, create_find_request_command, AssociationFactory, PDataAccumulator,
+};
+use crate::net::malformed_response::{
+    require_cmd_u16, validate_common_response_fields, MalformedDimseResponse, Operation,
+};
+use dicom_dictionary_std::tags;
 
 #[derive(Debug, Clone)]
 pub struct FindScu {
@@ -80,7 +85,10 @@ impl FindScu {
 
         loop {
             cancel::ensure_not_cancelled(cancel_flag)?;
-            match association.receive()? {
+            let pdu = association
+                .receive()
+                .map_err(|err| classify_assoc_receive_error(err))?;
+            match pdu {
                 Pdu::PData { data } => {
                     if data.is_empty() {
                         continue;
@@ -99,12 +107,21 @@ impl FindScu {
                         .to_int::<u16>()
                         .context("invalid C-FIND status")?;
 
-                    match status {
-                        0x0000 => break,
-                        0xFF00 | 0xFF01 => {
+                    let Some(status_info) =
+                        crate::net::dimse_status::interpret_status(Operation::CFind, status)
+                    else {
+                        return Err(anyhow!(MalformedDimseResponse::new(
+                            Operation::CFind,
+                            format!("unknown or invalid C-FIND status 0x{status:04X}"),
+                        )));
+                    };
+
+                    match status_info.category {
+                        crate::net::dimse_status::StatusCategory::Success => break,
+                        crate::net::dimse_status::StatusCategory::Pending => {
                             let mut dataset_bytes = response.dataset_bytes;
 
-                            if dataset_bytes.is_empty() || response.needs_dataset_fallback {
+                            if dataset_bytes.is_empty() {
                                 cancel::ensure_not_cancelled(cancel_flag)?;
                                 let bytes = AssociationFactory::read_single_pdata_dataset(
                                     &mut association,
@@ -122,17 +139,27 @@ impl FindScu {
 
                             matches.push(query_match_from_response(&response_obj, criteria.level));
                         }
-                        other => {
+                        crate::net::dimse_status::StatusCategory::Warning
+                        | crate::net::dimse_status::StatusCategory::Failure
+                        | crate::net::dimse_status::StatusCategory::Cancel => {
                             warn!(
                                 node = %node.name,
                                 ae_title = %node.ae_title,
                                 host = %node.host,
                                 port = node.port,
-                                status = %format_args!("0x{other:04X}"),
-                                "C-FIND failed with remote status"
+                                status = %format_args!("0x{status:04X}"),
+                                meaning = status_info.meaning,
+                                "C-FIND completed with non-success remote status"
                             );
                             let _ = association.abort();
-                            return Err(anyhow!("C-FIND failed with status 0x{other:04X}"));
+                            return Err(anyhow!(
+                                "C-FIND failed with status 0x{status:04X} ({}){}",
+                                status_info.meaning,
+                                status_info
+                                    .hint
+                                    .map(|hint| format!("; hint: {hint}"))
+                                    .unwrap_or_default()
+                            ));
                         }
                     }
                 }
@@ -175,7 +202,6 @@ impl FindScu {
 struct FindPDataResponse {
     command: DefaultMemObject,
     dataset_bytes: Vec<u8>,
-    needs_dataset_fallback: bool,
 }
 
 fn process_find_response_pdata(
@@ -187,33 +213,46 @@ fn process_find_response_pdata(
     }
 
     let mut dataset_bytes = Vec::new();
-    let mut saw_dataset_last = false;
-
     for value in data {
         match value.value_type {
             PDataValueType::Command => command_accumulator.feed(value)?,
             PDataValueType::Data => {
                 dataset_bytes.extend_from_slice(&value.data);
-                if value.is_last {
-                    saw_dataset_last = true;
-                }
             }
         }
     }
 
+    // Some peers send the dataset in a follow-up P-DATA after the command, but they might also
+    // interleave command and dataset parts across multiple PDU receives.
+    // If we see dataset fragments without a complete command response, we read the rest of the
+    // dataset payload from the stream (until PDV is_last) and return it as a fallback.
     let Some(command) = command_accumulator.take_command()? else {
-        if dataset_bytes.is_empty() {
-            return Ok(None);
-        }
-
-        return Err(anyhow!(
-            "received C-FIND dataset fragment before complete command response"
-        ));
+        // Defer dataset handling to the caller: if the peer decided to send dataset fragments
+        // before the command set is complete, the caller may fall back to draining dataset
+        // bytes via `read_single_pdata_dataset`.
+        return Ok(None);
     };
+
+    validate_common_response_fields(Operation::CFind, &command)?;
+
+    // C-FIND-RSP command field is 0x8020
+    let command_field = require_cmd_u16(
+        Operation::CFind,
+        &command,
+        tags::COMMAND_FIELD,
+        "CommandField",
+    )?;
+    if command_field != 0x8020 {
+        return Err(anyhow!(MalformedDimseResponse::new(
+            Operation::CFind,
+            format!(
+                "unexpected CommandField 0x{command_field:04X} (expected 0x8020 for C-FIND-RSP)"
+            )
+        )));
+    }
 
     Ok(Some(FindPDataResponse {
         command,
-        needs_dataset_fallback: !dataset_bytes.is_empty() && !saw_dataset_last,
         dataset_bytes,
     }))
 }
@@ -373,12 +412,12 @@ mod tests {
     }
 
     #[test]
-    fn dataset_before_complete_command_errors() {
+    fn dataset_before_complete_command_is_ignored_until_command_completes() {
         let bytes = command_bytes(0xFF00);
         let split_at = bytes.len() / 2;
         let mut accumulator = PDataAccumulator::new();
 
-        let error = feed_pdu(
+        assert!(feed_pdu(
             Pdu::PData {
                 data: vec![
                     command_pdata(bytes[..split_at].to_vec(), false),
@@ -387,10 +426,8 @@ mod tests {
             },
             &mut accumulator,
         )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("received C-FIND dataset fragment before complete command response"));
+        .unwrap()
+        .is_none());
     }
 
     #[test]
@@ -408,7 +445,6 @@ mod tests {
         let response = feed_pdu(pdu, &mut accumulator).unwrap().unwrap();
 
         assert_eq!(response.dataset_bytes, dataset);
-        assert!(!response.needs_dataset_fallback);
     }
 
     #[test]
@@ -420,7 +456,7 @@ mod tests {
 
         let response = feed_pdu(pdu, &mut accumulator).unwrap().unwrap();
 
-        assert!(response.dataset_bytes.is_empty() || response.needs_dataset_fallback);
+        assert!(response.dataset_bytes.is_empty());
     }
 
     #[test]
@@ -437,11 +473,10 @@ mod tests {
         let response = feed_pdu(pdu, &mut accumulator).unwrap().unwrap();
 
         assert_eq!(response.dataset_bytes, vec![1, 2, 3, 4]);
-        assert!(!response.needs_dataset_fallback);
     }
 
     #[test]
-    fn incomplete_inline_dataset_requests_fallback() {
+    fn incomplete_inline_dataset_is_returned_for_caller_fallback() {
         let pdu = Pdu::PData {
             data: vec![
                 command_pdata(command_bytes(0xFF00), true),
@@ -453,6 +488,5 @@ mod tests {
         let response = feed_pdu(pdu, &mut accumulator).unwrap().unwrap();
 
         assert_eq!(response.dataset_bytes, vec![1, 2]);
-        assert!(response.needs_dataset_fallback);
     }
 }

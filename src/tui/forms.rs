@@ -334,16 +334,27 @@ pub(super) enum StorageScpField {
     AllowPromiscuous,
     StrictPdu,
     MaxPduLength,
+
+    MaxFileImportBytes,
+    MaxZipEntryBytes,
+    MaxZipTotalBytes,
+    MaxZipEntryCount,
+    MaxStoreObjectBytes,
 }
 
 impl StorageScpField {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 11] = [
         Self::LocalAeTitle,
         Self::BindAddr,
         Self::Port,
         Self::AllowPromiscuous,
         Self::StrictPdu,
         Self::MaxPduLength,
+        Self::MaxFileImportBytes,
+        Self::MaxZipEntryBytes,
+        Self::MaxZipTotalBytes,
+        Self::MaxZipEntryCount,
+        Self::MaxStoreObjectBytes,
     ];
 
     pub(super) fn next(self) -> Self {
@@ -364,6 +375,13 @@ pub(super) struct StorageScpFormState {
     pub(super) allow_promiscuous_storage: bool,
     pub(super) strict_pdu: bool,
     pub(super) max_pdu_length: String,
+
+    pub(super) max_file_import_bytes: String,
+    pub(super) max_zip_entry_bytes: String,
+    pub(super) max_zip_total_bytes: String,
+    pub(super) max_zip_entry_count: String,
+    pub(super) max_store_object_bytes: String,
+
     pub(super) error: Option<String>,
 
     pub(super) touched: std::collections::BTreeSet<StorageScpField>,
@@ -379,6 +397,28 @@ impl StorageScpFormState {
             allow_promiscuous_storage: config.allow_promiscuous_storage,
             strict_pdu: config.strict_pdu,
             max_pdu_length: config.max_pdu_length.to_string(),
+
+            max_file_import_bytes: config
+                .max_file_import_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            max_zip_entry_bytes: config
+                .max_zip_entry_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            max_zip_total_bytes: config
+                .max_zip_total_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            max_zip_entry_count: config
+                .max_zip_entry_count
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            max_store_object_bytes: config
+                .max_store_object_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+
             error: None,
             touched: std::collections::BTreeSet::new(),
         }
@@ -390,6 +430,11 @@ impl StorageScpFormState {
             StorageScpField::BindAddr => Some(&mut self.bind_addr),
             StorageScpField::Port => Some(&mut self.port),
             StorageScpField::MaxPduLength => Some(&mut self.max_pdu_length),
+            StorageScpField::MaxFileImportBytes => Some(&mut self.max_file_import_bytes),
+            StorageScpField::MaxZipEntryBytes => Some(&mut self.max_zip_entry_bytes),
+            StorageScpField::MaxZipTotalBytes => Some(&mut self.max_zip_total_bytes),
+            StorageScpField::MaxZipEntryCount => Some(&mut self.max_zip_entry_count),
+            StorageScpField::MaxStoreObjectBytes => Some(&mut self.max_store_object_bytes),
             StorageScpField::AllowPromiscuous | StorageScpField::StrictPdu => None,
         }
     }
@@ -454,6 +499,38 @@ pub(super) fn build_send_request(
     Ok((form.kind, uid.to_string(), destination.to_string()))
 }
 
+fn parse_optional_u64_unlimited(raw: &str, label: &str) -> anyhow::Result<Option<u64>> {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+
+    let parsed: u64 = value
+        .parse()
+        .map_err(|_| anyhow!("{label} must be a non-negative integer"))?;
+    if parsed == 0 {
+        return Err(anyhow!("{label} must be greater than 0"));
+    }
+
+    Ok(Some(parsed))
+}
+
+fn parse_optional_usize_unlimited(raw: &str, label: &str) -> anyhow::Result<Option<usize>> {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+
+    let parsed: usize = value
+        .parse()
+        .map_err(|_| anyhow!("{label} must be a non-negative integer"))?;
+    if parsed == 0 {
+        return Err(anyhow!("{label} must be greater than 0"));
+    }
+
+    Ok(Some(parsed))
+}
+
 pub(super) fn parse_storage_scp_form(
     existing: &crate::config::AppConfig,
     form: &StorageScpFormState,
@@ -487,6 +564,17 @@ pub(super) fn parse_storage_scp_form(
         return Err(anyhow!("max PDU length must be greater than 0"));
     }
 
+    let max_file_import_bytes =
+        parse_optional_u64_unlimited(&form.max_file_import_bytes, "max file import bytes")?;
+    let max_zip_entry_bytes =
+        parse_optional_u64_unlimited(&form.max_zip_entry_bytes, "max zip entry bytes")?;
+    let max_zip_total_bytes =
+        parse_optional_u64_unlimited(&form.max_zip_total_bytes, "max zip total bytes")?;
+    let max_zip_entry_count =
+        parse_optional_usize_unlimited(&form.max_zip_entry_count, "max zip entry count")?;
+    let max_store_object_bytes =
+        parse_optional_u64_unlimited(&form.max_store_object_bytes, "max store object bytes")?;
+
     let mut next = existing.clone();
     next.local_ae_title = local_ae_title;
     next.storage_bind_addr = bind_addr.to_string();
@@ -494,6 +582,13 @@ pub(super) fn parse_storage_scp_form(
     next.max_pdu_length = max_pdu_length;
     next.strict_pdu = form.strict_pdu;
     next.allow_promiscuous_storage = form.allow_promiscuous_storage;
+
+    next.max_file_import_bytes = max_file_import_bytes;
+    next.max_zip_entry_bytes = max_zip_entry_bytes;
+    next.max_zip_total_bytes = max_zip_total_bytes;
+    next.max_zip_entry_count = max_zip_entry_count;
+    next.max_store_object_bytes = max_store_object_bytes;
+
     Ok(next)
 }
 
@@ -566,7 +661,7 @@ fn validate_dicom_date(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_uid(value: &str) -> anyhow::Result<()> {
+pub(super) fn validate_uid(value: &str) -> anyhow::Result<()> {
     if value.is_empty() {
         return Err(anyhow!("UID cannot be empty"));
     }
@@ -611,6 +706,101 @@ fn validate_modality(value: &str) -> anyhow::Result<()> {
         return Err(anyhow!("modality must be A-Z or 0-9"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{validate_dicom_date, validate_uid};
+
+    #[test]
+    fn validate_uid_accepts_common_dicom_uids() {
+        validate_uid("1.2.840.10008.1.2.1").expect("valid transfer syntax UID");
+        validate_uid("2.25.1234567890123456")
+            .expect("valid 2.25-style UID within component limits");
+    }
+
+    #[test]
+    fn validate_uid_rejects_empty() {
+        assert_eq!(
+            validate_uid("").unwrap_err().to_string(),
+            "UID cannot be empty"
+        );
+    }
+
+    #[test]
+    fn validate_uid_rejects_leading_or_trailing_dot() {
+        assert_eq!(
+            validate_uid(".1.2.3").unwrap_err().to_string(),
+            "UID cannot start or end with a dot"
+        );
+        assert_eq!(
+            validate_uid("1.2.3.").unwrap_err().to_string(),
+            "UID cannot start or end with a dot"
+        );
+    }
+
+    #[test]
+    fn validate_uid_rejects_empty_components() {
+        assert_eq!(
+            validate_uid("1..2").unwrap_err().to_string(),
+            "UID cannot contain empty components"
+        );
+    }
+
+    #[test]
+    fn validate_uid_rejects_non_numeric_components() {
+        assert_eq!(
+            validate_uid("1.2.a").unwrap_err().to_string(),
+            "UID component 'a' must be numeric"
+        );
+    }
+
+    #[test]
+    fn validate_uid_rejects_leading_zeros_in_components() {
+        assert_eq!(
+            validate_uid("1.02.3").unwrap_err().to_string(),
+            "UID component '02' cannot have leading zeros"
+        );
+    }
+
+    #[test]
+    fn validate_uid_rejects_component_length_over_16() {
+        let too_long = "12345678901234567"; // 17
+        assert_eq!(
+            validate_uid(&format!("1.{too_long}.3"))
+                .unwrap_err()
+                .to_string(),
+            format!("UID component '{too_long}' is too long")
+        );
+    }
+
+    #[test]
+    fn validate_uid_rejects_total_length_over_64() {
+        let uid = "1.1234567890123456.1234567890123456.1234567890123456.1234567890123456";
+        assert!(uid.len() > 64);
+        assert_eq!(
+            validate_uid(uid).unwrap_err().to_string(),
+            "UID must be at most 64 characters"
+        );
+    }
+
+    #[test]
+    fn validate_dicom_date_requires_yyyymmdd_digits() {
+        validate_dicom_date("20250131").expect("valid DICOM date");
+
+        assert_eq!(
+            validate_dicom_date("2025-01-31").unwrap_err().to_string(),
+            "expected YYYYMMDD"
+        );
+        assert_eq!(
+            validate_dicom_date("2025013").unwrap_err().to_string(),
+            "expected YYYYMMDD"
+        );
+        assert_eq!(
+            validate_dicom_date("202501AA").unwrap_err().to_string(),
+            "expected YYYYMMDD"
+        );
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1122,5 +1312,88 @@ mod tests {
 
         level = cycle_retrieve_level(level, -1);
         assert_eq!(level, QueryLevel::Study);
+    }
+
+    #[test]
+    fn parse_optional_u64_unlimited_accepts_blank_and_none() {
+        assert_eq!(parse_optional_u64_unlimited("", "value").unwrap(), None);
+        assert_eq!(parse_optional_u64_unlimited("   ", "value").unwrap(), None);
+        assert_eq!(parse_optional_u64_unlimited("none", "value").unwrap(), None);
+        assert_eq!(parse_optional_u64_unlimited("NoNe", "value").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_optional_u64_unlimited_parses_numbers() {
+        assert_eq!(
+            parse_optional_u64_unlimited("42", "value").unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            parse_optional_u64_unlimited("  1048576  ", "value").unwrap(),
+            Some(1_048_576)
+        );
+    }
+
+    #[test]
+    fn parse_optional_u64_unlimited_rejects_invalid_values() {
+        let err = parse_optional_u64_unlimited("-1", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a non-negative integer"));
+
+        let err = parse_optional_u64_unlimited("1.5", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a non-negative integer"));
+
+        let err = parse_optional_u64_unlimited("nope", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a non-negative integer"));
+
+        let err = parse_optional_u64_unlimited("0", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be greater than 0"));
+    }
+
+    #[test]
+    fn parse_optional_usize_unlimited_accepts_blank_and_none() {
+        assert_eq!(parse_optional_usize_unlimited("", "value").unwrap(), None);
+        assert_eq!(
+            parse_optional_usize_unlimited(" none ", "value").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_optional_usize_unlimited_parses_numbers() {
+        assert_eq!(
+            parse_optional_usize_unlimited("3", "value").unwrap(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn parse_optional_usize_unlimited_rejects_invalid_values() {
+        let err = parse_optional_usize_unlimited("-1", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a non-negative integer"));
+
+        let err = parse_optional_usize_unlimited("1.5", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a non-negative integer"));
+
+        let err = parse_optional_usize_unlimited("nope", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a non-negative integer"));
+
+        let err = parse_optional_usize_unlimited("0", "value")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be greater than 0"));
     }
 }

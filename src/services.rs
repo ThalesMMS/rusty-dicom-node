@@ -267,6 +267,16 @@ impl AppServices {
         self.importer.import_path_cancellable(path, cancel_flag)
     }
 
+    pub fn import_path_cancellable_with_progress(
+        &self,
+        path: &Path,
+        cancel_flag: &AtomicBool,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<ImportReport> {
+        self.importer
+            .import_path_cancellable_with_progress(path, cancel_flag, progress)
+    }
+
     pub fn query(
         &self,
         node_name_or_id: &str,
@@ -330,11 +340,15 @@ impl AppServices {
             None => self.move_scu.retrieve(&node, &request),
         };
 
+        // Always stop the local storage SCP after the retrieve attempt. If the task was cancelled,
+        // we still want to stop accepting new instances and return promptly.
         let scp_session_report = if let Some(handle) = background_server {
             Some(handle.stop()?)
         } else {
             None
         };
+
+        cancel::ensure_not_cancelled(cancel_flag)?;
 
         let outcome = outcome?;
 
@@ -422,15 +436,31 @@ impl AppServices {
         self.db.list_studies()
     }
 
+    pub fn local_studies_filtered(
+        &self,
+        filters: &crate::filters::StudyFilters,
+    ) -> Result<Vec<StudySummary>> {
+        self.db.list_studies_filtered(filters)
+    }
+
     pub fn local_series(&self, study_instance_uid: &str) -> Result<Vec<SeriesSummary>> {
         self.db.list_series_for_study(study_instance_uid)
+    }
+
+    pub fn local_series_filtered(
+        &self,
+        filters: &crate::filters::SeriesFilters,
+    ) -> Result<Vec<SeriesSummary>> {
+        self.db.list_series_filtered(filters)
     }
 
     pub fn local_instances(&self, series_instance_uid: &str) -> Result<Vec<LocalInstance>> {
         self.db.list_instances_for_series(series_instance_uid)
     }
 
-    pub fn run_storage_scp(&self) -> Result<()> {
+    pub fn run_storage_scp(&self) -> Result<ScpSessionReport> {
+        // Run until a stop is requested (SIGINT). This blocks the current thread.
+        // We return a session report so callers can render meaningful summaries.
         self.storage_scp.run_forever()
     }
 
@@ -502,6 +532,7 @@ mod tests {
             sqlite_db: PathBuf::from("/tmp/rusty-dicom-node/rusty-dicom-node.sqlite3"),
             managed_store_dir: PathBuf::from("/tmp/rusty-dicom-node/store"),
             logs_dir: PathBuf::from("/tmp/rusty-dicom-node/logs"),
+            active_log_file: PathBuf::from("/tmp/rusty-dicom-node/logs/app.log"),
         }
     }
 
@@ -522,6 +553,7 @@ mod tests {
             sqlite_db: base_dir.join("rusty-dicom-node.sqlite3"),
             managed_store_dir: base_dir.join("store"),
             logs_dir: base_dir.join("logs"),
+            active_log_file: base_dir.join("logs").join("app.log"),
         };
         let services = AppServices::load_from_paths(paths).expect("load services");
         (temp_dir, services)

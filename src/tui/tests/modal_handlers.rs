@@ -1,31 +1,6 @@
 use super::prelude::*;
 
 #[test]
-fn busy_guard_keeps_query_modal_open() {
-    let services = test_services();
-    add_test_node(&services, "pacs", "PACSAE");
-    let node = services.get_node("pacs").unwrap();
-    let mut app = TuiApp::new(services.services.clone());
-    app.running_task = Some(RunningTask {
-        description: "Sending study 1.2.3...".to_string(),
-        started_at: Instant::now(),
-    });
-    let mut form = QueryFormState::new(node);
-
-    let keep_modal = app
-        .handle_query_form_key(&mut form, key(KeyCode::Enter))
-        .unwrap();
-
-    assert!(keep_modal);
-    assert!(app.running_task.is_some());
-    assert!(app
-        .logs
-        .last()
-        .expect("busy log")
-        .contains("Please wait for the current operation to complete"));
-}
-
-#[test]
 fn handle_query_form_key_q_appends_to_text_field() {
     let services = test_services();
     add_test_node(&services, "pacs", "PACSAE");
@@ -477,4 +452,71 @@ fn invalid_storage_scp_form_shows_error_and_preserves_input() {
     assert!(form.error.is_some());
     assert_eq!(form.port, "99999");
     assert_eq!(form.local_ae_title, "bad ae");
+}
+
+#[test]
+fn storage_scp_form_save_persists_limit_keys_in_config_json() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    // Edit values and save
+    let mut form = StorageScpFormState::from_config(&services.services.config);
+    form.max_file_import_bytes = "123".to_string();
+    form.max_zip_entry_bytes = "234".to_string();
+    form.max_zip_total_bytes = "345".to_string();
+    form.max_zip_entry_count = "4".to_string();
+    form.max_store_object_bytes = "456".to_string();
+
+    let keep = app
+        .handle_storage_scp_form_key(&mut form, key(KeyCode::Enter))
+        .unwrap();
+    assert!(!keep);
+
+    // Ensure values were written with the correct keys
+    let raw =
+        std::fs::read_to_string(&services.services.paths.config_json).expect("read config.json");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse config.json");
+
+    assert_eq!(json["max_file_import_bytes"], 123);
+    assert_eq!(json["max_zip_entry_bytes"], 234);
+    assert_eq!(json["max_zip_total_bytes"], 345);
+    assert_eq!(json["max_zip_entry_count"], 4);
+    assert_eq!(json["max_store_object_bytes"], 456);
+}
+
+#[test]
+fn storage_scp_form_save_persists_unlimited_as_null_in_config_json() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    let mut form = StorageScpFormState::from_config(&services.services.config);
+    form.max_file_import_bytes = "none".to_string();
+    form.max_zip_entry_bytes = "".to_string();
+    form.max_zip_total_bytes = "NONE".to_string();
+    form.max_zip_entry_count = "  none  ".to_string();
+    form.max_store_object_bytes = "\t".to_string();
+
+    let keep = app
+        .handle_storage_scp_form_key(&mut form, key(KeyCode::Enter))
+        .unwrap();
+    assert!(!keep);
+
+    let raw =
+        std::fs::read_to_string(&services.services.paths.config_json).expect("read config.json");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse config.json");
+
+    assert!(json.get("max_file_import_bytes").is_some());
+    assert!(json["max_file_import_bytes"].is_null());
+
+    assert!(json.get("max_zip_entry_bytes").is_some());
+    assert!(json["max_zip_entry_bytes"].is_null());
+
+    assert!(json.get("max_zip_total_bytes").is_some());
+    assert!(json["max_zip_total_bytes"].is_null());
+
+    assert!(json.get("max_zip_entry_count").is_some());
+    assert!(json["max_zip_entry_count"].is_null());
+
+    assert!(json.get("max_store_object_bytes").is_some());
+    assert!(json["max_store_object_bytes"].is_null());
 }

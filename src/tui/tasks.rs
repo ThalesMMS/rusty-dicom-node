@@ -8,6 +8,29 @@ use std::{
     },
 };
 
+#[derive(Clone, Debug)]
+pub(crate) struct CancelHandle {
+    flag: Arc<AtomicBool>,
+}
+
+impl CancelHandle {
+    pub(crate) fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.flag.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.flag)
+    }
+}
+
 use super::*;
 use crate::cancel;
 
@@ -17,6 +40,8 @@ pub(super) type TaskId = u64;
 pub(super) enum TaskStatus {
     Queued,
     Running,
+    /// Cancellation was requested; task is still winding down.
+    Cancelling,
     Succeeded,
     Failed,
     Cancelled,
@@ -27,6 +52,7 @@ impl fmt::Display for TaskStatus {
         match self {
             TaskStatus::Queued => f.write_str("Queued"),
             TaskStatus::Running => f.write_str("Running"),
+            TaskStatus::Cancelling => f.write_str("Cancelling"),
             TaskStatus::Succeeded => f.write_str("Succeeded"),
             TaskStatus::Failed => f.write_str("Failed"),
             TaskStatus::Cancelled => f.write_str("Cancelled"),
@@ -53,6 +79,15 @@ pub(super) struct TaskInfo {
     pub(super) started_at: Option<Instant>,
     pub(super) finished_at: Option<Instant>,
     pub(super) progress: Option<TaskProgress>,
+    pub(super) outcome: Option<TaskOutcome>,
+    pub(super) summary: Option<dicom_node_client::summary::OperationSummary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TaskOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +113,7 @@ pub(super) enum BackgroundTask {
 }
 
 impl BackgroundTask {
-    fn description(&self) -> String {
+    pub(super) fn description(&self) -> String {
         match self {
             Self::Query {
                 node_name_or_id, ..
@@ -248,6 +283,7 @@ pub(super) struct QueuedTask {
     pub(super) description: String,
     pub(super) enqueued_at: Instant,
     pub(super) task: BackgroundTask,
+    pub(super) cleanup_on_cancel: Option<fn(&AppServices, &BackgroundTask)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,7 +299,7 @@ pub(super) struct TaskRunner {
 
     pub(super) events_rx: Option<Receiver<TaskEvent>>,
     pub(super) active_task_id: Option<TaskId>,
-    pub(super) active_cancel_flag: Option<Arc<AtomicBool>>,
+    pub(super) active_cancel_handle: Option<CancelHandle>,
     pub(super) next_task_id: TaskId,
     pub(super) queue: VecDeque<QueuedTask>,
 }
@@ -315,6 +351,13 @@ impl From<&BackgroundTask> for ActiveTaskKind {
     }
 }
 
+impl QueuedTask {
+    fn with_cleanup(mut self, cleanup: fn(&AppServices, &BackgroundTask)) -> Self {
+        self.cleanup_on_cancel = Some(cleanup);
+        self
+    }
+}
+
 impl TaskRunner {
     pub(super) fn new(services: Arc<AppServices>) -> Self {
         Self {
@@ -323,9 +366,63 @@ impl TaskRunner {
             active_task_kind: None,
             events_rx: None,
             active_task_id: None,
-            active_cancel_flag: None,
+            active_cancel_handle: None,
             next_task_id: 1,
             queue: VecDeque::new(),
+        }
+    }
+
+    fn cleanup_task(services: &AppServices, task: &BackgroundTask) {
+        match task {
+            BackgroundTask::Import { .. } => {
+                let staging_dir = &services.paths.managed_store_dir;
+                if let Ok(entries) = std::fs::read_dir(staging_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file()
+                            && path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| name.ends_with(".tmp"))
+                        {
+                            if let Err(error) = std::fs::remove_file(&path) {
+                                tracing::warn!(
+                                    %error,
+                                    tmp_path=%path.display(),
+                                    "failed to cleanup import staged tmp file after cancel"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            BackgroundTask::Retrieve { .. } => {
+                let incoming_dir = services.paths.managed_store_dir.join(".incoming");
+                if let Ok(entries) = std::fs::read_dir(&incoming_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file()
+                            && path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| {
+                                    name.starts_with("incoming-") && name.ends_with(".dcm")
+                                })
+                        {
+                            if let Err(error) = std::fs::remove_file(&path) {
+                                tracing::warn!(
+                                    %error,
+                                    incoming_path=%path.display(),
+                                    "failed to cleanup retrieve incoming tmp file after cancel"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            BackgroundTask::Query { .. }
+            | BackgroundTask::SendStudy { .. }
+            | BackgroundTask::SendSeries { .. } => {}
         }
     }
 
@@ -342,6 +439,7 @@ impl TaskRunner {
             id,
             description: task.description(),
             enqueued_at: Instant::now(),
+            cleanup_on_cancel: None,
             task,
         }
     }
@@ -360,6 +458,7 @@ impl TaskRunner {
         let id = queued_task.id;
         let description = queued_task.description;
         let task = queued_task.task;
+        let cleanup_on_cancel = queued_task.cleanup_on_cancel;
         let started_at = Instant::now();
         let (result_tx, result_rx) = mpsc::channel();
         let (events_tx, events_rx) = mpsc::channel();
@@ -372,8 +471,9 @@ impl TaskRunner {
         let thread_name = task.thread_name().to_string();
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_handle = CancelHandle::new(Arc::clone(&cancel_flag));
         self.active_task_id = Some(id);
-        self.active_cancel_flag = Some(Arc::clone(&cancel_flag));
+        self.active_cancel_handle = Some(cancel_handle);
         self.events_rx = Some(events_rx);
 
         let worker = thread::Builder::new().name(thread_name).spawn(move || {
@@ -409,40 +509,53 @@ impl TaskRunner {
                 )),
             }
 
-            let result = match task {
+            let result = match &task {
                 BackgroundTask::Query {
                     node_name_or_id,
                     criteria,
                 } => TaskResult::Query(services.query_cancellable(
-                    &node_name_or_id,
-                    &criteria,
+                    node_name_or_id,
+                    criteria,
                     &cancel_flag,
                 )),
-                BackgroundTask::Retrieve { request } => {
-                    TaskResult::Retrieve(services.retrieve_cancellable(request, &cancel_flag))
-                }
+                BackgroundTask::Retrieve { request } => TaskResult::Retrieve(
+                    services.retrieve_cancellable(request.clone(), &cancel_flag),
+                ),
                 BackgroundTask::Import { path } => {
-                    TaskResult::Import(services.import_path_cancellable(&path, &cancel_flag))
+                    let mut progress = |current: u64, total: Option<u64>| {
+                        if cancel_flag.load(Ordering::Acquire) {
+                            return;
+                        }
+                        reporter.progress(current, total);
+                    };
+                    TaskResult::Import(services.import_path_cancellable_with_progress(
+                        path,
+                        &cancel_flag,
+                        &mut progress,
+                    ))
                 }
                 BackgroundTask::SendStudy {
                     study_instance_uid,
                     destination_node,
                 } => TaskResult::Send(services.send_study_cancellable(
-                    &study_instance_uid,
-                    &destination_node,
+                    study_instance_uid,
+                    destination_node,
                     &cancel_flag,
                 )),
                 BackgroundTask::SendSeries {
                     series_instance_uid,
                     destination_node,
                 } => TaskResult::Send(services.send_series_cancellable(
-                    &series_instance_uid,
-                    &destination_node,
+                    series_instance_uid,
+                    destination_node,
                     &cancel_flag,
                 )),
             };
 
             if result.is_cancelled() {
+                if let Some(cleanup) = cleanup_on_cancel {
+                    cleanup(&services, &task);
+                }
                 reporter.cancelled(Some("cancelled".to_string()));
                 return;
             }
@@ -480,7 +593,7 @@ impl TaskRunner {
         if let Err(error) = worker {
             self.events_rx = None;
             self.active_task_id = None;
-            self.active_cancel_flag = None;
+            self.active_cancel_handle = None;
             return Err(TaskError::ThreadLaunchFailed(error));
         }
 
@@ -566,9 +679,9 @@ impl TaskRunner {
     }
 
     fn active_cancelled(&self) -> bool {
-        self.active_cancel_flag
+        self.active_cancel_handle
             .as_ref()
-            .map(|flag| flag.load(Ordering::Acquire))
+            .map(CancelHandle::is_cancelled)
             .unwrap_or(false)
     }
 
@@ -588,11 +701,13 @@ impl TaskRunner {
         self.events_rx = None;
         self.active_task_kind = None;
         self.active_task_id = None;
-        self.active_cancel_flag = None;
+        self.active_cancel_handle = None;
     }
 
     pub(super) fn enqueue(&mut self, task: BackgroundTask) -> TaskEvent {
-        let queued_task = self.queued_task(task);
+        let queued_task = self
+            .queued_task(task)
+            .with_cleanup(TaskRunner::cleanup_task);
         let event = TaskEvent::Queued {
             id: queued_task.id,
             description: queued_task.description.clone(),
@@ -606,16 +721,20 @@ impl TaskRunner {
         !self.queue.is_empty()
     }
 
-    #[allow(
-        dead_code,
-        reason = "cancel command wiring will use this active task cancellation hook"
-    )]
     pub(super) fn cancel_active(&mut self) -> Option<TaskId> {
         let id = self.active_task_id?;
-        if let Some(flag) = self.active_cancel_flag.as_ref() {
-            flag.store(true, Ordering::Release);
-        }
+
+        self.active_cancel_handle.as_ref()?.cancel();
         Some(id)
+    }
+
+    pub(super) fn active_cancel_handle(&self) -> Option<CancelHandle> {
+        self.active_cancel_handle.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_set_active_cancel_handle(&mut self, handle: CancelHandle) {
+        self.active_cancel_handle = Some(handle);
     }
 
     pub(super) fn try_start_next(&mut self) -> Result<Option<RunningTask>, TaskError> {
@@ -761,7 +880,7 @@ mod tests {
         runner.receiver = Some(receiver);
         runner.active_task_id = Some(42);
         runner.active_task_kind = Some(ActiveTaskKind::Retrieve);
-        runner.active_cancel_flag = Some(Arc::new(AtomicBool::new(true)));
+        runner.active_cancel_handle = Some(CancelHandle::new(Arc::new(AtomicBool::new(true))));
 
         match runner.try_recv() {
             Some(TaskEvent::Cancelled { id, reason, .. }) => {
@@ -773,7 +892,7 @@ mod tests {
 
         assert!(runner.receiver.is_none());
         assert!(runner.active_task_kind.is_none());
-        assert!(runner.active_cancel_flag.is_none());
+        assert!(runner.active_cancel_handle.is_none());
     }
 
     #[test]
@@ -818,7 +937,7 @@ mod tests {
         runner.events_rx = Some(receiver);
         runner.active_task_id = Some(42);
         runner.active_task_kind = Some(ActiveTaskKind::Query);
-        runner.active_cancel_flag = Some(Arc::new(AtomicBool::new(true)));
+        runner.active_cancel_handle = Some(CancelHandle::new(Arc::new(AtomicBool::new(true))));
 
         match runner.try_recv_event() {
             Some(TaskEvent::Cancelled { id, reason, .. }) => {
@@ -832,7 +951,7 @@ mod tests {
         assert!(runner.receiver.is_none());
         assert!(runner.active_task_id.is_none());
         assert!(runner.active_task_kind.is_none());
-        assert!(runner.active_cancel_flag.is_none());
+        assert!(runner.active_cancel_handle.is_none());
     }
 
     #[test]
@@ -852,7 +971,7 @@ mod tests {
         runner.events_rx = Some(receiver);
         runner.active_task_id = Some(42);
         runner.active_task_kind = Some(ActiveTaskKind::Import);
-        runner.active_cancel_flag = Some(Arc::new(AtomicBool::new(true)));
+        runner.active_cancel_handle = Some(CancelHandle::new(Arc::new(AtomicBool::new(true))));
 
         match runner.try_recv_event() {
             Some(TaskEvent::Cancelled { id, reason, .. }) => {
@@ -866,7 +985,38 @@ mod tests {
         assert!(runner.receiver.is_none());
         assert!(runner.active_task_id.is_none());
         assert!(runner.active_task_kind.is_none());
-        assert!(runner.active_cancel_flag.is_none());
+        assert!(runner.active_cancel_handle.is_none());
+    }
+
+    #[test]
+    fn cancel_active_sets_cancel_flag_when_active_task_exists() {
+        let fixture = test_services();
+        let services = Arc::new(fixture.services.clone());
+        let mut runner = TaskRunner::new(Arc::clone(&services));
+
+        runner.active_task_id = Some(123);
+        let flag = Arc::new(AtomicBool::new(false));
+        runner.test_set_active_cancel_handle(CancelHandle::new(Arc::clone(&flag)));
+
+        let id = runner.cancel_active();
+
+        assert_eq!(id, Some(123));
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancel_active_is_noop_when_no_active_task_exists() {
+        let fixture = test_services();
+        let services = Arc::new(fixture.services.clone());
+        let mut runner = TaskRunner::new(Arc::clone(&services));
+
+        let flag = Arc::new(AtomicBool::new(false));
+        runner.test_set_active_cancel_handle(CancelHandle::new(Arc::clone(&flag)));
+
+        let id = runner.cancel_active();
+
+        assert_eq!(id, None);
+        assert!(!flag.load(Ordering::Acquire));
     }
 
     #[test]

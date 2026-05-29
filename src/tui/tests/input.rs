@@ -183,6 +183,28 @@ fn pane_shortcut_opens_add_node_modal() {
     assert!(matches!(app.modal, Some(ModalState::AddNode(_))));
 }
 
+#[test]
+fn tasks_pane_shortcut_c_requests_cancellation() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    app.focus = FocusPane::Tasks;
+
+    // Seed an active task so cancellation is meaningful.
+    app.task_runner.active_task_id = Some(7);
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.task_runner.active_cancel_handle = Some(crate::tui::tasks::CancelHandle::new(
+        std::sync::Arc::clone(&flag),
+    ));
+
+    app.handle_key(key(KeyCode::Char('c'))).unwrap();
+
+    assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        app.logs.last().map(String::as_str),
+        Some("Cancellation requested")
+    );
+}
+
 // ── input.rs coverage ─────────────────────────────────────────────────────────
 
 #[test]
@@ -413,6 +435,57 @@ fn reset_history_navigation_clears_index_and_draft() {
 
     assert_eq!(app.history_index, None);
     assert_eq!(app.draft, "");
+}
+
+// ── input.rs: detail scroll shortcuts (PageUp/PageDown) ───────────────────────
+
+#[test]
+fn page_down_scrolls_detail_when_not_in_input() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    app.focus = FocusPane::Nodes;
+    app.detail_scroll = 0;
+
+    app.handle_key(key(KeyCode::PageDown)).unwrap();
+
+    assert_eq!(app.detail_scroll, 10);
+}
+
+#[test]
+fn page_up_scrolls_detail_when_not_in_input() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    app.focus = FocusPane::Nodes;
+    app.detail_scroll = 20;
+
+    app.handle_key(key(KeyCode::PageUp)).unwrap();
+
+    assert_eq!(app.detail_scroll, 10);
+}
+
+#[test]
+fn page_up_saturates_at_zero() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    app.focus = FocusPane::Nodes;
+    app.detail_scroll = 0;
+
+    app.handle_key(key(KeyCode::PageUp)).unwrap();
+
+    assert_eq!(app.detail_scroll, 0);
+}
+
+#[test]
+fn page_up_down_are_ignored_when_input_has_focus() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    // focus is Input by default
+    app.detail_scroll = 0;
+
+    app.handle_key(key(KeyCode::PageDown)).unwrap();
+    app.handle_key(key(KeyCode::PageUp)).unwrap();
+
+    assert_eq!(app.detail_scroll, 0);
 }
 
 // ── input.rs: handle_key pane shortcuts ───────────────────────────────────────

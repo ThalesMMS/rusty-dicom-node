@@ -320,6 +320,7 @@ pub struct LocalInstance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StudySummary {
     pub study_instance_uid: String,
     pub patient_name: Option<String>,
@@ -332,6 +333,7 @@ pub struct StudySummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SeriesSummary {
     pub study_instance_uid: String,
     pub series_instance_uid: String,
@@ -341,20 +343,48 @@ pub struct SeriesSummary {
     pub instance_count: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ImportItemOutcome {
+    Accepted,
+    Duplicate { reason: DuplicateReason },
+    Rejected { reason: String },
+    Skipped { reason: String },
+    FailedCleanup { reason: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DuplicateReason {
+    SopInstanceUid,
+    Sha256,
+    SopInstanceUidAndSha256,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImportReport {
     pub scanned_files: usize,
     pub accepted: usize,
     pub duplicates: usize,
+    pub duplicate_by_sop_instance_uid: usize,
+    pub duplicate_by_sha256: usize,
     pub unreadable: usize,
     pub invalid_dicom: usize,
     pub failures: Vec<String>,
     pub stored_bytes: u64,
+
+    // Extended batch import summary counts (non-breaking defaults).
+    // These are not yet used everywhere, but are included in the report model
+    // so callers can surface richer summaries.
+    pub skipped: usize,
+    pub failed_cleanup: usize,
 }
 
 impl ImportReport {
     pub fn rejected(&self) -> usize {
         self.unreadable + self.invalid_dicom
+    }
+
+    pub fn total(&self) -> usize {
+        self.accepted + self.duplicates + self.rejected() + self.skipped + self.failed_cleanup
     }
 
     pub fn record_unreadable(&mut self, source: impl fmt::Display, reason: impl fmt::Display) {
@@ -365,6 +395,30 @@ impl ImportReport {
     pub fn record_invalid_dicom(&mut self, source: impl fmt::Display, reason: impl fmt::Display) {
         self.invalid_dicom += 1;
         self.failures.push(format!("{source}: {reason}"));
+    }
+
+    pub fn record_outcome(&mut self, source: impl fmt::Display, outcome: ImportItemOutcome) {
+        match &outcome {
+            ImportItemOutcome::Accepted => {
+                self.accepted += 1;
+            }
+            ImportItemOutcome::Duplicate { .. } => {
+                self.duplicates += 1;
+            }
+            ImportItemOutcome::Rejected { reason } => {
+                self.invalid_dicom += 1;
+                self.failures.push(format!("{source}: {reason}"));
+            }
+            ImportItemOutcome::Skipped { reason } => {
+                self.skipped += 1;
+                self.failures.push(format!("{source}: skipped: {reason}"));
+            }
+            ImportItemOutcome::FailedCleanup { reason } => {
+                self.failed_cleanup += 1;
+                self.failures
+                    .push(format!("{source}: cleanup failed: {reason}"));
+            }
+        }
     }
 }
 

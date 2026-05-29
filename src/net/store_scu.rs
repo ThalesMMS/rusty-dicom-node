@@ -23,8 +23,11 @@ use crate::{
 
 use super::{
     assoc::{
-        create_store_request_command, AssociationFactory, NegotiatedContext, PDataAccumulator,
-        PresentationContextDefinition,
+        classify_assoc_receive_error, create_store_request_command, AssociationFactory,
+        NegotiatedContext, PDataAccumulator, PresentationContextDefinition,
+    },
+    malformed_response::{
+        require_cmd_u16, validate_common_response_fields, MalformedDimseResponse, Operation,
     },
     transfer::{can_send_file_with_transfer_syntax, common_store_transfer_syntaxes},
 };
@@ -271,28 +274,53 @@ impl StoreScu {
 
         loop {
             cancel::ensure_not_cancelled(cancel_flag).map_err(StoreSendError::fatal)?;
-            match association
+            let pdu = association
                 .receive()
-                .map_err(|err| StoreSendError::fatal(err.into()))?
-            {
+                .map_err(|err| StoreSendError::fatal(classify_assoc_receive_error(err)))?;
+            match pdu {
                 Pdu::PData { data } => {
                     if data.is_empty() {
                         continue;
                     }
 
                     match process_store_response_pdata(&data, &mut command_accumulator) {
-                        Ok(Some(0x0000)) => return Ok(()),
                         Ok(Some(status)) => {
-                            warn!(
-                                path = %file.path.display(),
-                                sop_class_uid = %file.sop_class_uid,
-                                sop_instance_uid = %file.sop_instance_uid,
-                                status = %format_args!("0x{status:04X}"),
-                                "remote returned non-success C-STORE status"
-                            );
-                            return Err(StoreSendError::recoverable(anyhow!(
-                                "remote returned C-STORE status 0x{status:04X}"
-                            )));
+                            let Some(status_info) = crate::net::dimse_status::interpret_status(
+                                Operation::CStore,
+                                status,
+                            ) else {
+                                return Err(StoreSendError::fatal(anyhow!(
+                                    MalformedDimseResponse::new(
+                                        Operation::CStore,
+                                        format!("unknown or invalid C-STORE status 0x{status:04X}"),
+                                    )
+                                )));
+                            };
+
+                            match status_info.category {
+                                crate::net::dimse_status::StatusCategory::Success => return Ok(()),
+                                crate::net::dimse_status::StatusCategory::Warning
+                                | crate::net::dimse_status::StatusCategory::Failure
+                                | crate::net::dimse_status::StatusCategory::Cancel
+                                | crate::net::dimse_status::StatusCategory::Pending => {
+                                    warn!(
+                                        path = %file.path.display(),
+                                        sop_class_uid = %file.sop_class_uid,
+                                        sop_instance_uid = %file.sop_instance_uid,
+                                        status = %format_args!("0x{status:04X}"),
+                                        meaning = status_info.meaning,
+                                        "remote returned non-success C-STORE status"
+                                    );
+                                    return Err(StoreSendError::recoverable(anyhow!(
+                                        "remote returned C-STORE status 0x{status:04X} ({}){}",
+                                        status_info.meaning,
+                                        status_info
+                                            .hint
+                                            .map(|hint| format!("; hint: {hint}"))
+                                            .unwrap_or_default()
+                                    )));
+                                }
+                            }
                         }
                         Ok(None) => continue,
                         Err(err) => {
@@ -546,11 +574,25 @@ fn process_store_response_pdata(
         return Ok(None);
     };
 
-    let status = response
-        .element(tags::STATUS)
-        .context("missing C-STORE response status")?
-        .to_int::<u16>()
-        .context("invalid C-STORE response status")?;
+    validate_common_response_fields(Operation::CStore, &response)?;
+
+    // C-STORE-RSP command field is 0x8001
+    let command_field = require_cmd_u16(
+        Operation::CStore,
+        &response,
+        tags::COMMAND_FIELD,
+        "CommandField",
+    )?;
+    if command_field != 0x8001 {
+        return Err(anyhow!(MalformedDimseResponse::new(
+            Operation::CStore,
+            format!(
+                "unexpected CommandField 0x{command_field:04X} (expected 0x8001 for C-STORE-RSP)"
+            )
+        )));
+    }
+
+    let status = require_cmd_u16(Operation::CStore, &response, tags::STATUS, "Status")?;
     Ok(Some(status))
 }
 

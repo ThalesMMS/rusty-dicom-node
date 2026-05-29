@@ -38,6 +38,8 @@ pub(super) fn node_patch_values_from_kv(
 pub(super) fn tui_command_help_lines() -> &'static [&'static str] {
     &[
         "commands:",
+        "  note: the footer shows contextual 'Next:' suggestions based on the focused pane and selection.",
+        "        They are hints only; you can always type any command.",
         "  refresh",
         "  note: canonical names match CLI flags without '--', using underscores.",
         "  node add name=<n> ae=<AE> (or ae_title=<AE>) host=<host> port=<port>",
@@ -61,6 +63,13 @@ pub(super) fn tui_command_help_lines() -> &'static [&'static str] {
         "             study_uid=<uid> (or study_instance_uid=<uid> or study=<uid>)",
         "  send-series node=<name> (or destination_node=<name>)",
         "              series_uid=<uid> (or series_instance_uid=<uid> or series=<uid>)",
+        "  local studies [patient_name=..] [patient_id=..] [study_description=..]",
+        "              [study_date=VALUE|START..END|START..|..END]",
+        "              [modality=CT,MR,..] [imported_at=VALUE|START..END|START..|..END]",
+        "              [duplicate=true|false]",
+        "  local series study_uid=<uid> (or study_instance_uid=<uid> or study=<uid>)",
+        "  local instances series_uid=<uid> (or series_instance_uid=<uid> or series=<uid>)",
+        "  cancel (alias: stop)",
         "  quit",
     ]
 }
@@ -368,6 +377,27 @@ mod tests {
 
         let send_error = parse_send_study_command_args(&args(&["study_uid=1.2.3"])).unwrap_err();
         assert!(send_error.to_string().contains("destination_node"));
+    }
+
+    #[test]
+    fn local_inventory_alias_registry_accepts_short_and_canonical_names() {
+        let kv = parse_key_values(&[
+            "study_uid=1.2.3".to_string(),
+            "study_instance_uid=2.3.4".to_string(),
+            "study=3.4.5".to_string(),
+            "series_uid=1.2.3.4".to_string(),
+            "series_instance_uid=2.3.4.5".to_string(),
+            "series=3.4.5.6".to_string(),
+        ])
+        .unwrap();
+
+        // Alias resolution picks the first alias key found in the alias list,
+        // which prefers canonical keys (e.g. *_instance_uid) over the shorter forms.
+        assert_eq!(get_kv_alt(&kv, STUDY_INSTANCE_UID_ALIASES), Some("2.3.4"));
+        assert_eq!(
+            get_kv_alt(&kv, SERIES_INSTANCE_UID_ALIASES),
+            Some("2.3.4.5")
+        );
     }
     #[test]
     fn node_kv_mapping_normalizes_empty_optional_fields() {

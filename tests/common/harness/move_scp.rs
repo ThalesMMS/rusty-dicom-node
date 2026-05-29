@@ -27,6 +27,7 @@ use dicom_object::mem::InMemDicomObject;
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_ul::association::ServerAssociationOptions;
 
+use super::send_command_fragments_for_test;
 use super::{
     bind_test_listener, element_string, is_preflight_probe, negotiated_transfer_syntax,
     next_dimse_message, send_command,
@@ -59,6 +60,7 @@ pub struct MoveScpBuilder {
     files: Vec<PathBuf>,
     destinations: HashMap<String, Destination>,
     failure_mode: MoveFailureMode,
+    response_command_fragments: Option<Vec<usize>>,
 }
 
 #[derive(Debug)]
@@ -84,6 +86,7 @@ impl MoveScpBuilder {
             files: Vec::new(),
             destinations: HashMap::new(),
             failure_mode: MoveFailureMode::None,
+            response_command_fragments: None,
         })
     }
 
@@ -129,6 +132,11 @@ impl MoveScpBuilder {
         self
     }
 
+    pub fn response_command_fragments(mut self, sizes: Vec<usize>) -> Self {
+        self.response_command_fragments = Some(sizes);
+        self
+    }
+
     pub fn partial_failures(mut self, failed: u32) -> Self {
         self.failure_mode = MoveFailureMode::PartialFailure { failed };
         self
@@ -153,6 +161,7 @@ impl MoveScpBuilder {
         let files = Arc::new(self.files);
         let destinations = Arc::new(self.destinations);
         let failure_mode = self.failure_mode;
+        let response_command_fragments = Arc::new(self.response_command_fragments);
 
         let join_handle = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
@@ -164,6 +173,7 @@ impl MoveScpBuilder {
                             files.as_ref(),
                             destinations.as_ref(),
                             failure_mode,
+                            response_command_fragments.as_deref(),
                             &thread_received,
                         )?;
                     }
@@ -221,6 +231,7 @@ fn handle_move_connection(
     files: &[PathBuf],
     destinations: &HashMap<String, Destination>,
     failure_mode: MoveFailureMode,
+    response_command_fragments: Option<&[usize]>,
     received: &Arc<Mutex<Vec<ReceivedMove>>>,
 ) -> anyhow::Result<()> {
     stream
@@ -293,18 +304,46 @@ fn handle_move_connection(
                         files.len() as u32,
                         0,
                     );
-                    send_command(
-                        &mut association,
-                        message.presentation_context_id,
-                        &final_response,
-                    )?;
+                    match response_command_fragments {
+                        Some(sizes) if !sizes.is_empty() => {
+                            let command_bytes =
+                                AssociationFactory::write_command_dataset(&final_response)?;
+                            send_command_fragments_for_test(
+                                &mut association,
+                                message.presentation_context_id,
+                                command_bytes,
+                                sizes,
+                            )?;
+                        }
+                        _ => {
+                            send_command(
+                                &mut association,
+                                message.presentation_context_id,
+                                &final_response,
+                            )?;
+                        }
+                    }
                     continue;
                 }
 
                 let attempted = matching_move_files(files, &identifier)?.len() as u32;
                 let pending =
                     move_response_command(message_id, &sop_class_uid, 0xFF00, attempted, 0, 0, 0);
-                send_command(&mut association, message.presentation_context_id, &pending)?;
+
+                match response_command_fragments {
+                    Some(sizes) if !sizes.is_empty() => {
+                        let command_bytes = AssociationFactory::write_command_dataset(&pending)?;
+                        send_command_fragments_for_test(
+                            &mut association,
+                            message.presentation_context_id,
+                            command_bytes,
+                            sizes,
+                        )?;
+                    }
+                    _ => {
+                        send_command(&mut association, message.presentation_context_id, &pending)?;
+                    }
+                }
 
                 let outcome = perform_move(
                     ae_title,
@@ -323,11 +362,25 @@ fn handle_move_connection(
                     outcome.failed,
                     outcome.warning,
                 );
-                send_command(
-                    &mut association,
-                    message.presentation_context_id,
-                    &final_response,
-                )?;
+                match response_command_fragments {
+                    Some(sizes) if !sizes.is_empty() => {
+                        let command_bytes =
+                            AssociationFactory::write_command_dataset(&final_response)?;
+                        send_command_fragments_for_test(
+                            &mut association,
+                            message.presentation_context_id,
+                            command_bytes,
+                            sizes,
+                        )?;
+                    }
+                    _ => {
+                        send_command(
+                            &mut association,
+                            message.presentation_context_id,
+                            &final_response,
+                        )?;
+                    }
+                }
             }
             other => return Err(anyhow!("unsupported move SCP command 0x{other:04X}")),
         }

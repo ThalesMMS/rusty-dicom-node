@@ -7,8 +7,10 @@ use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension, Statement};
 
 pub(crate) struct InstanceImportStatements<'conn> {
+    conn: &'conn Connection,
     instance_exists: Statement<'conn>,
     upsert_instance: Statement<'conn>,
+    refresh_study_summary: Statement<'conn>,
 }
 
 impl<'conn> InstanceImportStatements<'conn> {
@@ -18,7 +20,8 @@ impl<'conn> InstanceImportStatements<'conn> {
             SELECT EXISTS(
                 SELECT 1
                 FROM local_instances
-                WHERE sop_instance_uid = ?1 OR sha256 = ?2
+                WHERE sop_instance_uid = ?1
+                   OR sha256 = ?2
             )
             "#,
         )?;
@@ -67,13 +70,80 @@ impl<'conn> InstanceImportStatements<'conn> {
                 sha256 = excluded.sha256,
                 source_path = excluded.source_path,
                 managed_path = excluded.managed_path,
-                imported_at = excluded.imported_at
+                imported_at = excluded.imported_at,
+                series_number_sort_class = CASE
+                    WHEN excluded.series_number IS NULL THEN 2
+                    WHEN TRIM(excluded.series_number) <> '' AND (TRIM(excluded.series_number) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(excluded.series_number) GLOB '-*') OR (TRIM(excluded.series_number) GLOB '+*'))
+                            AND substr(TRIM(excluded.series_number), 2) <> ''
+                            AND substr(TRIM(excluded.series_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                series_number_sort_int = CASE
+                    WHEN excluded.series_number IS NOT NULL
+                        AND TRIM(excluded.series_number) <> ''
+                        AND (TRIM(excluded.series_number) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(excluded.series_number) GLOB '-*') OR (TRIM(excluded.series_number) GLOB '+*'))
+                                AND substr(TRIM(excluded.series_number), 2) <> ''
+                                AND substr(TRIM(excluded.series_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(excluded.series_number) AS INTEGER)
+                END,
+                series_number_sort_text = excluded.series_number,
+                instance_number_sort_class = CASE
+                    WHEN excluded.instance_number IS NULL THEN 2
+                    WHEN TRIM(excluded.instance_number) <> '' AND (TRIM(excluded.instance_number) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(excluded.instance_number) GLOB '-*') OR (TRIM(excluded.instance_number) GLOB '+*'))
+                            AND substr(TRIM(excluded.instance_number), 2) <> ''
+                            AND substr(TRIM(excluded.instance_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                instance_number_sort_int = CASE
+                    WHEN excluded.instance_number IS NOT NULL
+                        AND TRIM(excluded.instance_number) <> ''
+                        AND (TRIM(excluded.instance_number) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(excluded.instance_number) GLOB '-*') OR (TRIM(excluded.instance_number) GLOB '+*'))
+                                AND substr(TRIM(excluded.instance_number), 2) <> ''
+                                AND substr(TRIM(excluded.instance_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(excluded.instance_number) AS INTEGER)
+                END,
+                instance_number_sort_text = excluded.instance_number
+            "#,
+        )?;
+
+        let refresh_study_summary = conn.prepare(
+            r#"
+            INSERT OR REPLACE INTO local_studies (
+                study_instance_uid,
+                patient_name,
+                patient_id,
+                study_date_max,
+                study_description,
+                modalities,
+                series_count,
+                instance_count
+            )
+            SELECT
+                study_instance_uid,
+                MAX(patient_name) AS patient_name,
+                MAX(patient_id) AS patient_id,
+                COALESCE(MAX(study_date), '') AS study_date_max,
+                MAX(study_description) AS study_description,
+                GROUP_CONCAT(DISTINCT modality) AS modalities,
+                COUNT(DISTINCT series_instance_uid) AS series_count,
+                COUNT(*) AS instance_count
+            FROM local_instances
+            WHERE study_instance_uid = ?1
+            GROUP BY study_instance_uid
             "#,
         )?;
 
         Ok(Self {
+            conn,
             instance_exists,
             upsert_instance,
+            refresh_study_summary,
         })
     }
 
@@ -82,6 +152,32 @@ impl<'conn> InstanceImportStatements<'conn> {
             .instance_exists
             .query_row(params![sop_instance_uid, sha256], |row| row.get(0))?;
         Ok(exists != 0)
+    }
+
+    fn instance_duplicate_reason(
+        &mut self,
+        sop_instance_uid: &str,
+        sha256: &str,
+    ) -> Result<Option<crate::models::DuplicateReason>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT
+                EXISTS(SELECT 1 FROM local_instances WHERE sop_instance_uid = ?1) AS sop_exists,
+                EXISTS(SELECT 1 FROM local_instances WHERE sha256 = ?2) AS sha_exists
+            "#,
+        )?;
+
+        let (sop_exists, sha_exists): (i64, i64) = stmt
+            .query_row(params![sop_instance_uid, sha256], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+
+        Ok(match (sop_exists != 0, sha_exists != 0) {
+            (false, false) => None,
+            (true, false) => Some(crate::models::DuplicateReason::SopInstanceUid),
+            (false, true) => Some(crate::models::DuplicateReason::Sha256),
+            (true, true) => Some(crate::models::DuplicateReason::SopInstanceUidAndSha256),
+        })
     }
 
     fn upsert_instance(&mut self, instance: &LocalInstance) -> Result<()> {
@@ -106,6 +202,9 @@ impl<'conn> InstanceImportStatements<'conn> {
             instance.managed_path,
             instance.imported_at,
         ])?;
+
+        self.refresh_study_summary
+            .execute(params![instance.study_instance_uid])?;
         Ok(())
     }
 }
@@ -219,7 +318,13 @@ impl Database {
                 sha256 TEXT NOT NULL,
                 source_path TEXT NOT NULL,
                 managed_path TEXT NOT NULL,
-                imported_at TEXT NOT NULL
+                imported_at TEXT NOT NULL,
+                series_number_sort_class INTEGER,
+                series_number_sort_int INTEGER,
+                series_number_sort_text TEXT,
+                instance_number_sort_class INTEGER,
+                instance_number_sort_int INTEGER,
+                instance_number_sort_text TEXT
             );
 
             -- Existing databases keep their original table definition, so this
@@ -236,8 +341,130 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_instances_sha256
                 ON local_instances(sha256);
+
+            -- Helper sort keys for numeric-ish SeriesNumber/InstanceNumber ordering.
+            -- Existing databases are migrated via ALTER TABLE calls in Rust below
+            -- (SQLite does not support ADD COLUMN IF NOT EXISTS).
+
+            CREATE TABLE IF NOT EXISTS local_studies (
+                study_instance_uid TEXT PRIMARY KEY,
+                patient_name TEXT,
+                patient_id TEXT,
+                study_date_max TEXT NOT NULL,
+                study_description TEXT,
+                modalities TEXT,
+                series_count INTEGER NOT NULL,
+                instance_count INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_local_studies_ordering
+                ON local_studies(study_date_max DESC, study_instance_uid);
+
+            -- Backfill local_studies from local_instances (safe and idempotent).
+            INSERT OR REPLACE INTO local_studies (
+                study_instance_uid,
+                patient_name,
+                patient_id,
+                study_date_max,
+                study_description,
+                modalities,
+                series_count,
+                instance_count
+            )
+            SELECT
+                study_instance_uid,
+                MAX(patient_name) AS patient_name,
+                MAX(patient_id) AS patient_id,
+                COALESCE(MAX(study_date), '') AS study_date_max,
+                MAX(study_description) AS study_description,
+                GROUP_CONCAT(DISTINCT modality) AS modalities,
+                COUNT(DISTINCT series_instance_uid) AS series_count,
+                COUNT(*) AS instance_count
+            FROM local_instances
+            GROUP BY study_instance_uid;
+
+            -- Backfill sort keys for existing rows (safe and idempotent).
+            UPDATE local_instances
+            SET
+                series_number_sort_class = CASE
+                    WHEN series_number IS NULL THEN 2
+                    WHEN TRIM(series_number) <> '' AND (TRIM(series_number) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(series_number) GLOB '-*') OR (TRIM(series_number) GLOB '+*'))
+                            AND substr(TRIM(series_number), 2) <> ''
+                            AND substr(TRIM(series_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                series_number_sort_int = CASE
+                    WHEN series_number IS NOT NULL
+                        AND TRIM(series_number) <> ''
+                        AND (TRIM(series_number) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(series_number) GLOB '-*') OR (TRIM(series_number) GLOB '+*'))
+                                AND substr(TRIM(series_number), 2) <> ''
+                                AND substr(TRIM(series_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(series_number) AS INTEGER)
+                END,
+                series_number_sort_text = series_number,
+                instance_number_sort_class = CASE
+                    WHEN instance_number IS NULL THEN 2
+                    WHEN TRIM(instance_number) <> '' AND (TRIM(instance_number) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(instance_number) GLOB '-*') OR (TRIM(instance_number) GLOB '+*'))
+                            AND substr(TRIM(instance_number), 2) <> ''
+                            AND substr(TRIM(instance_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                instance_number_sort_int = CASE
+                    WHEN instance_number IS NOT NULL
+                        AND TRIM(instance_number) <> ''
+                        AND (TRIM(instance_number) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(instance_number) GLOB '-*') OR (TRIM(instance_number) GLOB '+*'))
+                                AND substr(TRIM(instance_number), 2) <> ''
+                                AND substr(TRIM(instance_number), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(instance_number) AS INTEGER)
+                END,
+                instance_number_sort_text = instance_number
+            WHERE
+                series_number_sort_class IS NULL
+                OR series_number_sort_text IS NULL
+                OR instance_number_sort_class IS NULL
+                OR instance_number_sort_text IS NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_instances_series_ordering
+                ON local_instances(series_instance_uid, instance_number_sort_class, instance_number_sort_int, instance_number_sort_text, sop_instance_uid);
+
+            CREATE INDEX IF NOT EXISTS idx_instances_study_files_ordering
+                ON local_instances(study_instance_uid, series_number_sort_class, series_number_sort_int, series_number_sort_text, series_instance_uid, instance_number_sort_class, instance_number_sort_int, instance_number_sort_text, sop_instance_uid);
             "#,
         )?;
+
+        // Best-effort migrations for existing databases. Ignore duplicate-column
+        // errors so init remains idempotent.
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN series_number_sort_class INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN series_number_sort_int INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN series_number_sort_text TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN instance_number_sort_class INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN instance_number_sort_int INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN instance_number_sort_text TEXT",
+            [],
+        );
+
         Ok(())
     }
 
@@ -332,6 +559,14 @@ impl Database {
         stmts.instance_exists(sop_instance_uid, sha256)
     }
 
+    pub(crate) fn instance_duplicate_reason_with_statements(
+        stmts: &mut InstanceImportStatements<'_>,
+        sop_instance_uid: &str,
+        sha256: &str,
+    ) -> Result<Option<crate::models::DuplicateReason>> {
+        stmts.instance_duplicate_reason(sop_instance_uid, sha256)
+    }
+
     pub fn instance_exists(&self, sop_instance_uid: &str, sha256: &str) -> Result<bool> {
         let conn = self.connection()?;
         let exists: i64 = conn.query_row(
@@ -378,10 +613,54 @@ impl Database {
                 sha256,
                 source_path,
                 managed_path,
-                imported_at
+                imported_at,
+                series_number_sort_class,
+                series_number_sort_int,
+                series_number_sort_text,
+                instance_number_sort_class,
+                instance_number_sort_int,
+                instance_number_sort_text
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                CASE
+                    WHEN ?12 IS NULL THEN 2
+                    WHEN TRIM(?12) <> '' AND (TRIM(?12) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(?12) GLOB '-*') OR (TRIM(?12) GLOB '+*'))
+                            AND substr(TRIM(?12), 2) <> ''
+                            AND substr(TRIM(?12), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                CASE
+                    WHEN ?12 IS NOT NULL
+                        AND TRIM(?12) <> ''
+                        AND (TRIM(?12) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(?12) GLOB '-*') OR (TRIM(?12) GLOB '+*'))
+                                AND substr(TRIM(?12), 2) <> ''
+                                AND substr(TRIM(?12), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(?12) AS INTEGER)
+                END,
+                ?12,
+                CASE
+                    WHEN ?14 IS NULL THEN 2
+                    WHEN TRIM(?14) <> '' AND (TRIM(?14) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(?14) GLOB '-*') OR (TRIM(?14) GLOB '+*'))
+                            AND substr(TRIM(?14), 2) <> ''
+                            AND substr(TRIM(?14), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                CASE
+                    WHEN ?14 IS NOT NULL
+                        AND TRIM(?14) <> ''
+                        AND (TRIM(?14) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(?14) GLOB '-*') OR (TRIM(?14) GLOB '+*'))
+                                AND substr(TRIM(?14), 2) <> ''
+                                AND substr(TRIM(?14), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(?14) AS INTEGER)
+                END,
+                ?14
             )
             ON CONFLICT(sop_instance_uid) DO UPDATE SET
                 study_instance_uid = excluded.study_instance_uid,
@@ -401,7 +680,13 @@ impl Database {
                 sha256 = excluded.sha256,
                 source_path = excluded.source_path,
                 managed_path = excluded.managed_path,
-                imported_at = excluded.imported_at
+                imported_at = excluded.imported_at,
+                series_number_sort_class = excluded.series_number_sort_class,
+                series_number_sort_int = excluded.series_number_sort_int,
+                series_number_sort_text = excluded.series_number_sort_text,
+                instance_number_sort_class = excluded.instance_number_sort_class,
+                instance_number_sort_int = excluded.instance_number_sort_int,
+                instance_number_sort_text = excluded.instance_number_sort_text
             "#,
             params![
                 instance.sop_instance_uid,
@@ -425,28 +710,77 @@ impl Database {
                 instance.imported_at,
             ],
         )?;
-        Ok(())
-    }
 
-    pub fn list_studies(&self) -> Result<Vec<StudySummary>> {
-        let conn = self.connection()?;
-        let mut stmt = conn.prepare(
+        conn.execute(
             r#"
+            INSERT OR REPLACE INTO local_studies (
+                study_instance_uid,
+                patient_name,
+                patient_id,
+                study_date_max,
+                study_description,
+                modalities,
+                series_count,
+                instance_count
+            )
             SELECT
                 study_instance_uid,
                 MAX(patient_name) AS patient_name,
                 MAX(patient_id) AS patient_id,
-                MAX(study_date) AS study_date,
+                COALESCE(MAX(study_date), '') AS study_date_max,
                 MAX(study_description) AS study_description,
                 GROUP_CONCAT(DISTINCT modality) AS modalities,
                 COUNT(DISTINCT series_instance_uid) AS series_count,
                 COUNT(*) AS instance_count
             FROM local_instances
+            WHERE study_instance_uid = ?1
             GROUP BY study_instance_uid
-            ORDER BY COALESCE(MAX(study_date), '') DESC, study_instance_uid
             "#,
+            params![instance.study_instance_uid],
         )?;
-        let rows = stmt.query_map([], |row| {
+
+        Ok(())
+    }
+
+    pub fn list_studies(&self) -> Result<Vec<StudySummary>> {
+        self.list_studies_filtered(&crate::filters::StudyFilters::default())
+    }
+
+    pub fn list_studies_filtered(
+        &self,
+        filters: &crate::filters::StudyFilters,
+    ) -> Result<Vec<StudySummary>> {
+        let conn = self.connection()?;
+        let clause = crate::sql_filters::build_study_where_clause(filters);
+
+        // Note: keep `instance_count > 0` regardless of filtering.
+        let sql = format!(
+            r#"
+            SELECT
+                study_instance_uid,
+                patient_name,
+                patient_id,
+                NULLIF(study_date_max, '') AS study_date,
+                study_description,
+                modalities,
+                series_count,
+                instance_count
+            FROM local_studies
+            {}
+            {}instance_count > 0
+            ORDER BY study_date_max DESC, study_instance_uid
+            "#,
+            clause.sql,
+            if clause.sql.is_empty() {
+                "WHERE "
+            } else {
+                " AND "
+            }
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&str> = clause.params.iter().map(|s| s.as_str()).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
             Ok(StudySummary {
                 study_instance_uid: row.get(0)?,
                 patient_name: row.get(1)?,
@@ -467,9 +801,22 @@ impl Database {
     }
 
     pub fn list_series_for_study(&self, study_instance_uid: &str) -> Result<Vec<SeriesSummary>> {
+        let filters = crate::filters::SeriesFilters {
+            study_instance_uid: Some(study_instance_uid.to_string()),
+            ..Default::default()
+        };
+        self.list_series_filtered(&filters)
+    }
+
+    pub fn list_series_filtered(
+        &self,
+        filters: &crate::filters::SeriesFilters,
+    ) -> Result<Vec<SeriesSummary>> {
         let conn = self.connection()?;
-        let series_number_order = sqlite_integer_text_order("MAX(series_number)");
-        let query = format!(
+        let clause = crate::sql_filters::build_series_where_clause(filters);
+
+        // Use a subquery so we can filter on local_instances fields, then group.
+        let sql = format!(
             r#"
             SELECT
                 study_instance_uid,
@@ -478,14 +825,33 @@ impl Database {
                 MAX(series_number) AS series_number,
                 MAX(series_description) AS series_description,
                 COUNT(*) AS instance_count
-            FROM local_instances
-            WHERE study_instance_uid = ?1
+            FROM (
+                SELECT
+                    study_instance_uid,
+                    series_instance_uid,
+                    modality,
+                    series_number,
+                    series_description,
+                    series_number_sort_class,
+                    series_number_sort_int,
+                    sop_instance_uid,
+                    sha256
+                FROM local_instances
+                {where_clause}
+            )
             GROUP BY study_instance_uid, series_instance_uid
-            ORDER BY {series_number_order}, series_instance_uid
-            "#
+            ORDER BY
+                MIN(series_number_sort_class),
+                CASE WHEN MIN(series_number_sort_class) = 0 THEN MIN(series_number_sort_int) END,
+                MAX(series_number),
+                series_instance_uid
+            "#,
+            where_clause = clause.sql
         );
-        let mut stmt = conn.prepare(&query)?;
-        let rows = stmt.query_map(params![study_instance_uid], |row| {
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&str> = clause.params.iter().map(|s| s.as_str()).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
             Ok(SeriesSummary {
                 study_instance_uid: row.get(0)?,
                 series_instance_uid: row.get(1)?,
@@ -508,9 +874,7 @@ impl Database {
         series_instance_uid: &str,
     ) -> Result<Vec<LocalInstance>> {
         let conn = self.connection()?;
-        let instance_number_order = sqlite_integer_text_order("instance_number");
-        let query = format!(
-            r#"
+        let query = r#"
             SELECT
                 study_instance_uid,
                 series_instance_uid,
@@ -533,11 +897,14 @@ impl Database {
                 imported_at
             FROM local_instances
             WHERE series_instance_uid = ?1
-            ORDER BY {instance_number_order}, sop_instance_uid
-            "#
-        );
+            ORDER BY
+                instance_number_sort_class,
+                CASE WHEN instance_number_sort_class = 0 THEN instance_number_sort_int END,
+                instance_number,
+                sop_instance_uid
+            "#;
 
-        let mut stmt = conn.prepare(&query)?;
+        let mut stmt = conn.prepare(query)?;
         let rows = stmt.query_map(params![series_instance_uid], |row| {
             Ok(LocalInstance {
                 study_instance_uid: row.get(0)?,
@@ -571,17 +938,21 @@ impl Database {
 
     pub fn study_files(&self, study_instance_uid: &str) -> Result<Vec<PathBuf>> {
         let conn = self.connection()?;
-        let series_number_order = sqlite_integer_text_order("series_number");
-        let instance_number_order = sqlite_integer_text_order("instance_number");
-        let query = format!(
-            r#"
+        let query = r#"
             SELECT managed_path
             FROM local_instances
             WHERE study_instance_uid = ?1
-            ORDER BY {series_number_order}, series_instance_uid, {instance_number_order}, sop_instance_uid
-            "#
-        );
-        let mut stmt = conn.prepare(&query)?;
+            ORDER BY
+                series_number_sort_class,
+                CASE WHEN series_number_sort_class = 0 THEN series_number_sort_int END,
+                series_number,
+                series_instance_uid,
+                instance_number_sort_class,
+                CASE WHEN instance_number_sort_class = 0 THEN instance_number_sort_int END,
+                instance_number,
+                sop_instance_uid
+            "#;
+        let mut stmt = conn.prepare(query)?;
         let rows = stmt.query_map(params![study_instance_uid], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
@@ -592,16 +963,17 @@ impl Database {
 
     pub fn series_files(&self, series_instance_uid: &str) -> Result<Vec<PathBuf>> {
         let conn = self.connection()?;
-        let instance_number_order = sqlite_integer_text_order("instance_number");
-        let query = format!(
-            r#"
+        let query = r#"
             SELECT managed_path
             FROM local_instances
             WHERE series_instance_uid = ?1
-            ORDER BY {instance_number_order}, sop_instance_uid
-            "#
-        );
-        let mut stmt = conn.prepare(&query)?;
+            ORDER BY
+                instance_number_sort_class,
+                CASE WHEN instance_number_sort_class = 0 THEN instance_number_sort_int END,
+                instance_number,
+                sop_instance_uid
+            "#;
+        let mut stmt = conn.prepare(query)?;
         let rows = stmt.query_map(params![series_instance_uid], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
@@ -609,26 +981,6 @@ impl Database {
         }
         Ok(out)
     }
-}
-
-/// `sqlite_integer_text_order` builds an ORDER BY fragment that sorts numeric
-/// values first, then non-numeric text, then `NULL`. Numeric values are
-/// compared by `CAST(TRIM(column) AS INTEGER)`, and the original text is kept
-/// as the final tie-breaker for stable ordering.
-///
-/// Safety: `column` must be a trusted SQL expression from this module, not
-/// user-supplied input, because `sqlite_integer_text_order` emits raw SQL.
-fn sqlite_integer_text_order(column: &str) -> String {
-    let trimmed = format!("TRIM({column})");
-    let is_numeric = format!(
-        "{trimmed} <> '' AND ({trimmed} NOT GLOB '*[^0-9]*' OR ((({trimmed} GLOB '-*') OR ({trimmed} GLOB '+*')) AND substr({trimmed}, 2) <> '' AND substr({trimmed}, 2) NOT GLOB '*[^0-9]*'))"
-    );
-
-    format!(
-        "CASE WHEN {column} IS NULL THEN 2 WHEN {is_numeric} THEN 0 ELSE 1 END, \
-         CASE WHEN {is_numeric} THEN CAST({trimmed} AS INTEGER) END, \
-         {column}"
-    )
 }
 
 fn map_remote_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteNode> {
@@ -649,7 +1001,7 @@ fn map_remote_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteNode> {
 mod tests {
     use super::{update_managed_paths, Database};
     use crate::models::{LocalInstance, RemoteNode};
-    use rusqlite::{Connection, ErrorCode};
+    use rusqlite::{params, Connection, ErrorCode};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -843,6 +1195,160 @@ mod tests {
             .expect_err("legacy schema should gain NOCASE uniqueness during init");
 
         assert_unique_constraint(error);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explain_query_plan_smoke_for_study_and_drilldown_queries() {
+        let root = unique_temp_dir("rusty-dicom-node-db-test");
+        let db_path = root.join("rusty-dicom-node.sqlite3");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let db = Database::open(&db_path).expect("open temp db");
+
+        // Seed a small but non-trivial dataset so the query planner has a reason
+        // to consider indexes.
+        for study_idx in 0..3 {
+            let study_uid = format!("study-{study_idx}");
+            for series_idx in 0..3 {
+                let series_uid = format!("series-{study_idx}-{series_idx}");
+                for inst_idx in 0..50 {
+                    let sop_uid = format!("inst-{study_idx}-{series_idx}-{inst_idx}");
+                    let managed_path = root.join(format!("{sop_uid}.dcm"));
+                    let series_number = Some(format!("{series_idx}"));
+                    let instance_number = Some(format!("{inst_idx}"));
+                    let mut instance = sample_instance_with_numbers(
+                        &managed_path,
+                        &series_uid,
+                        &sop_uid,
+                        series_number.as_deref(),
+                        instance_number.as_deref(),
+                    );
+                    instance.study_instance_uid = study_uid.clone();
+                    // Provide some study_date coverage for the MAX(study_date) aggregation.
+                    instance.study_date = Some(format!("2025010{}", study_idx));
+
+                    db.upsert_instance(&instance)
+                        .expect("insert local instance");
+                }
+            }
+        }
+
+        let conn = db.connection().expect("open connection");
+
+        // Performance smoke: ensure the optimized queries are at least not
+        // egregiously slow. This is intentionally a loose bound to avoid
+        // flakiness across environments.
+        let start = std::time::Instant::now();
+        for _ in 0..50 {
+            let _ = db.list_studies().expect("list studies");
+            let _ = db.list_series_for_study("study-0").expect("list series");
+            let _ = db
+                .list_instances_for_series("series-0-0")
+                .expect("list instances");
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "performance smoke check exceeded 2s: {:?}",
+            elapsed
+        );
+
+        // Study list query.
+        let plan: String = conn
+            .query_row(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT
+                    study_instance_uid,
+                    patient_name,
+                    patient_id,
+                    NULLIF(study_date_max, '') AS study_date,
+                    study_description,
+                    modalities,
+                    series_count,
+                    instance_count
+                FROM local_studies
+                WHERE instance_count > 0
+                ORDER BY study_date_max DESC, study_instance_uid
+                "#,
+                [],
+                |row| {
+                    let detail: String = row.get(3)?;
+                    Ok(detail)
+                },
+            )
+            .expect("explain study list query");
+        assert!(
+            plan.contains("idx_local_studies_ordering"),
+            "expected plan to mention idx_local_studies_ordering, got: {plan}"
+        );
+        assert!(
+            !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "expected study list query to avoid temp btree for ORDER BY, got: {plan}"
+        );
+
+        // Series list query.
+        let series_plan: String = conn
+            .query_row(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT
+                    study_instance_uid,
+                    series_instance_uid,
+                    MAX(modality) AS modality,
+                    MAX(series_number) AS series_number,
+                    MAX(series_description) AS series_description,
+                    COUNT(*) AS instance_count
+                FROM local_instances
+                WHERE study_instance_uid = ?1
+                GROUP BY study_instance_uid, series_instance_uid
+                ORDER BY
+                    MIN(series_number_sort_class),
+                    CASE WHEN MIN(series_number_sort_class) = 0 THEN MIN(series_number_sort_int) END,
+                    MAX(series_number),
+                    series_instance_uid
+                "#,
+                params!["study-0"],
+                |row| row.get(3),
+            )
+            .expect("explain series list query");
+        assert!(
+            series_plan.contains("idx_instances_study_uid"),
+            "expected series list plan to mention idx_instances_study_uid, got: {series_plan}"
+        );
+        assert!(
+            !series_plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "expected series list query to avoid temp btree for ORDER BY, got: {series_plan}"
+        );
+
+        // Instance list query.
+        let inst_plan: String = conn
+            .query_row(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT sop_instance_uid
+                FROM local_instances
+                WHERE series_instance_uid = ?1
+                ORDER BY
+                    instance_number_sort_class,
+                    CASE WHEN instance_number_sort_class = 0 THEN instance_number_sort_int END,
+                    instance_number,
+                    sop_instance_uid
+                "#,
+                params!["series-0-0"],
+                |row| row.get(3),
+            )
+            .expect("explain instance list query");
+        assert!(
+            inst_plan.contains("idx_instances_series_uid")
+                || inst_plan.contains("idx_instances_series_ordering"),
+            "expected instance list plan to mention idx_instances_series_uid or idx_instances_series_ordering, got: {inst_plan}"
+        );
+        assert!(
+            !inst_plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "expected instance list query to avoid temp btree for ORDER BY, got: {inst_plan}"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1068,6 +1574,94 @@ mod tests {
         let ordered_numbers: Vec<_> = series
             .iter()
             .map(|series| series.series_number.as_deref())
+            .collect();
+
+        assert_eq!(
+            ordered_numbers,
+            vec![Some("2"), Some("10"), Some(""), Some("zeta"), None]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_studies_orders_by_study_date_desc_nulls_last() {
+        let root = unique_temp_dir("rusty-dicom-node-db-test");
+        let db_path = root.join("rusty-dicom-node.sqlite3");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let db = Database::open(&db_path).expect("open temp db");
+
+        // Note: list_studies ordering is by COALESCE(MAX(study_date), '') DESC.
+        // That means real (lexicographic) study_date values sort first, and NULLs sort last.
+        let fixtures = [
+            ("study-null", None),
+            ("study-20240101", Some("20240101")),
+            ("study-20231231", Some("20231231")),
+        ];
+
+        for (study_uid, study_date) in fixtures {
+            let managed_path = root.join(format!("{study_uid}.dcm"));
+            let mut instance = sample_instance_with_numbers(
+                &managed_path,
+                "series",
+                &format!("instance-{study_uid}"),
+                Some("1"),
+                Some("1"),
+            );
+            instance.study_instance_uid = study_uid.to_string();
+            instance.study_date = study_date.map(|v| v.to_string());
+
+            db.upsert_instance(&instance)
+                .expect("insert local instance");
+        }
+
+        let studies = db.list_studies().expect("list studies");
+        let ordered_uids: Vec<_> = studies
+            .iter()
+            .map(|study| study.study_instance_uid.as_str())
+            .collect();
+
+        assert_eq!(
+            ordered_uids,
+            vec!["study-20240101", "study-20231231", "study-null"]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_instances_for_series_orders_numeric_values_before_non_numeric_and_null() {
+        let root = unique_temp_dir("rusty-dicom-node-db-test");
+        let db_path = root.join("rusty-dicom-node.sqlite3");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let db = Database::open(&db_path).expect("open temp db");
+
+        let fixtures = [
+            ("inst-null", None),
+            ("inst-non-numeric", Some("zeta")),
+            ("inst-10", Some("10")),
+            ("inst-empty", Some("")),
+            ("inst-2", Some("2")),
+        ];
+
+        for (sop_uid, instance_number) in fixtures {
+            let managed_path = root.join(format!("{sop_uid}.dcm"));
+            db.upsert_instance(&sample_instance_with_numbers(
+                &managed_path,
+                "series",
+                sop_uid,
+                Some("1"),
+                instance_number,
+            ))
+            .expect("insert local instance");
+        }
+
+        let instances = db
+            .list_instances_for_series("series")
+            .expect("list instances for series");
+        let ordered_numbers: Vec<_> = instances
+            .iter()
+            .map(|inst| inst.instance_number.as_deref())
             .collect();
 
         assert_eq!(

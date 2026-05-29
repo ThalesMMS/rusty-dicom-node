@@ -17,7 +17,12 @@ use crate::{
     models::{MoveOutcome, MoveRequest, RemoteNode},
 };
 
-use super::assoc::{create_move_request_command, AssociationFactory, PDataAccumulator};
+use super::assoc::{
+    classify_assoc_receive_error, create_move_request_command, AssociationFactory, PDataAccumulator,
+};
+use crate::net::malformed_response::{
+    require_cmd_u16, validate_common_response_fields, MalformedDimseResponse, Operation,
+};
 
 #[derive(Debug, Clone)]
 pub struct MoveScu {
@@ -98,7 +103,10 @@ impl MoveScu {
 
         loop {
             cancel::ensure_not_cancelled(cancel_flag)?;
-            match association.receive()? {
+            let pdu = association
+                .receive()
+                .map_err(|err| classify_assoc_receive_error(err))?;
+            match pdu {
                 Pdu::PData { data } => {
                     if data.is_empty() {
                         continue;
@@ -124,11 +132,23 @@ impl MoveScu {
                         continue;
                     };
 
-                    match status {
-                        0xFF00 | 0xFF01 => continue,
-                        0x0000 => break,
-                        _ if move_status_may_have_identifier(status)
-                            && dataset_accumulator.is_complete() =>
+                    let Some(status_info) =
+                        crate::net::dimse_status::interpret_status(Operation::CMove, status)
+                    else {
+                        return Err(anyhow!(MalformedDimseResponse::new(
+                            Operation::CMove,
+                            format!("unknown or invalid C-MOVE status 0x{status:04X}"),
+                        )));
+                    };
+
+                    match status_info.category {
+                        crate::net::dimse_status::StatusCategory::Pending => continue,
+                        crate::net::dimse_status::StatusCategory::Success => break,
+                        crate::net::dimse_status::StatusCategory::Warning
+                        | crate::net::dimse_status::StatusCategory::Failure
+                        | crate::net::dimse_status::StatusCategory::Cancel
+                            if move_status_may_have_identifier(status)
+                                && dataset_accumulator.is_complete() =>
                         {
                             parse_move_response_identifier(
                                 &mut dataset_accumulator,
@@ -136,8 +156,11 @@ impl MoveScu {
                             )?;
                             break;
                         }
-                        _ if move_status_may_have_identifier(status)
-                            && !dataset_accumulator.is_empty() =>
+                        crate::net::dimse_status::StatusCategory::Warning
+                        | crate::net::dimse_status::StatusCategory::Failure
+                        | crate::net::dimse_status::StatusCategory::Cancel
+                            if move_status_may_have_identifier(status)
+                                && !dataset_accumulator.is_empty() =>
                         {
                             awaiting_identifier_status = Some(status);
                             continue;
@@ -206,11 +229,25 @@ fn process_move_response_pdata(
         return Ok(None);
     };
 
-    let status = command_obj
-        .element(tags::STATUS)
-        .context("missing C-MOVE status")?
-        .to_int::<u16>()
-        .context("invalid C-MOVE status")?;
+    validate_common_response_fields(Operation::CMove, &command_obj)?;
+
+    // C-MOVE-RSP command field is 0x8021
+    let command_field = require_cmd_u16(
+        Operation::CMove,
+        &command_obj,
+        tags::COMMAND_FIELD,
+        "CommandField",
+    )?;
+    if command_field != 0x8021 {
+        return Err(anyhow!(MalformedDimseResponse::new(
+            Operation::CMove,
+            format!(
+                "unexpected CommandField 0x{command_field:04X} (expected 0x8021 for C-MOVE-RSP)"
+            )
+        )));
+    }
+
+    let status = require_cmd_u16(Operation::CMove, &command_obj, tags::STATUS, "Status")?;
 
     outcome.final_status = status;
     outcome.remaining =

@@ -2,7 +2,20 @@ use super::*;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::models::LocalInstance;
+use crate::{
+    models::LocalInstance,
+    tui::suggestions::{resolve_top_suggestion, SuggestionContext},
+};
+
+pub(in crate::tui) const FOCUSED_PANE_MARKER: &str = "▶ ";
+
+pub(in crate::tui) fn pane_title_text(title: &str, focused: bool) -> String {
+    if focused {
+        format!("{FOCUSED_PANE_MARKER}{title}")
+    } else {
+        title.to_string()
+    }
+}
 
 /// Produce a trimmed string slice when the input contains non-whitespace characters.
 ///
@@ -175,9 +188,31 @@ pub(in crate::tui) fn footer_status_text(view: &TuiView) -> String {
         FocusPane::Logs => {}
         FocusPane::Tasks => {
             parts.push("Enter inspect".to_string());
+            parts.push("c cancel".to_string());
             parts.push("t queued/history".to_string());
         }
     }
+
+    let mut suggestion_ctx = SuggestionContext::new(view.focus);
+    suggestion_ctx.show_help = view.show_help;
+    suggestion_ctx.has_selected_node = view.selected_node.is_some();
+    suggestion_ctx.has_query_results = !view.query_results.is_empty();
+    suggestion_ctx.has_selected_query_result = view.selected_query_result.is_some();
+    suggestion_ctx.local_drill_down = view.local_drill_down;
+    suggestion_ctx.local_instance_drill_down = view.local_instance_drill_down;
+    suggestion_ctx.has_selected_local_study = view.selected_local_study.is_some();
+    suggestion_ctx.has_selected_local_series = view.selected_local_series.is_some();
+    suggestion_ctx.has_selected_local_instance = view.selected_local_instance.is_some();
+    suggestion_ctx.has_queued_tasks = queued_count > 0;
+
+    // Suggestion segment: a non-interactive hint about the next likely action.
+    // NOTE: Do not truncate here unconditionally; the footer is width-limited at render time.
+    let suggestion = resolve_top_suggestion(suggestion_ctx);
+    let next_segment = format!("Next: {}", suggestion.text);
+    parts.push(next_segment);
+
+    // No telemetry/logging: suggestions are derived deterministically per-render and
+    // should not generate logs in normal operation.
 
     if view.focus != FocusPane::Input {
         parts.push("q quit".to_string());
@@ -276,24 +311,29 @@ pub(in crate::tui) fn query_results_empty_text(
     ])
 }
 
-/// Return a text style with bold when active, otherwise the default style.
+/// Return a style used for pane borders/titles when the pane is focused.
+///
+/// This intentionally does **not** rely on bold alone: focused panes are additionally colored
+/// (cyan) so focus remains visible across terminal themes.
 ///
 /// # Returns
 ///
-/// `Style` with the `Modifier::BOLD` added if `active` is `true`, otherwise `Style::default()`.
+/// When `active` is `true`, returns a cyan, bold style. Otherwise returns `Style::default()`.
 ///
 /// # Examples
 ///
 /// ```
-/// use ratatui::style::{Style, Modifier};
+/// use ratatui::style::{Style, Color, Modifier};
 /// let on = active_block_style(true);
 /// let off = active_block_style(false);
-/// assert_eq!(on, Style::default().add_modifier(Modifier::BOLD));
+/// assert_eq!(on, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
 /// assert_eq!(off, Style::default());
 /// ```
 pub(in crate::tui) fn active_block_style(active: bool) -> Style {
     if active {
-        Style::default().add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     }
@@ -470,7 +510,7 @@ pub(in crate::tui) fn pad_or_truncate(value: &str, width: usize) -> String {
         }
     }
 
-    out.extend(std::iter::repeat(' ').take(width - display_width));
+    out.extend(std::iter::repeat_n(' ', width - display_width));
     out
 }
 

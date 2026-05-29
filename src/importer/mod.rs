@@ -13,7 +13,7 @@ use crate::{
     cancel,
     config::{AppConfig, AppPaths},
     db::{Database, InstanceImportStatements},
-    error::Result,
+    error::{ImportRejectionReason, Result},
     models::ImportReport,
 };
 
@@ -37,7 +37,7 @@ impl Importer {
     }
 
     pub fn import_path(&self, path: &Path) -> Result<ImportReport> {
-        self.import_path_with_cancel(path, None)
+        self.import_path_with_cancel(path, None, None)
     }
 
     pub fn import_path_cancellable(
@@ -45,13 +45,31 @@ impl Importer {
         path: &Path,
         cancel_flag: &AtomicBool,
     ) -> Result<ImportReport> {
-        self.import_path_with_cancel(path, Some(cancel_flag))
+        self.import_path_with_cancel(path, Some(cancel_flag), None)
     }
 
-    fn import_path_with_cancel(
+    pub fn import_path_with_progress(
+        &self,
+        path: &Path,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<ImportReport> {
+        self.import_path_with_cancel(path, None, Some(progress))
+    }
+
+    pub fn import_path_cancellable_with_progress(
+        &self,
+        path: &Path,
+        cancel_flag: &AtomicBool,
+        progress: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<ImportReport> {
+        self.import_path_with_cancel(path, Some(cancel_flag), Some(progress))
+    }
+
+    fn import_path_with_cancel<'a>(
         &self,
         path: &Path,
         cancel_flag: Option<&AtomicBool>,
+        mut progress: Option<&'a mut dyn FnMut(u64, Option<u64>)>,
     ) -> Result<ImportReport> {
         cancel::ensure_not_cancelled(cancel_flag)?;
         if !path.exists() {
@@ -60,14 +78,23 @@ impl Importer {
 
         if path.is_dir() {
             validate_readable_dir(path)?;
-            self.import_folder_with_cancel(path, cancel_flag)
+            match progress {
+                Some(progress) => self.import_folder_with_cancel(path, cancel_flag, Some(progress)),
+                None => self.import_folder_with_cancel(path, cancel_flag, None),
+            }
         } else if is_zip_path(path) {
             validate_readable_file(path, "ZIP import file")?;
-            self.import_zip_with_cancel(path, cancel_flag)
+            match progress {
+                Some(progress) => self.import_zip_with_cancel(path, cancel_flag, Some(progress)),
+                None => self.import_zip_with_cancel(path, cancel_flag, None),
+            }
         } else {
             validate_readable_file(path, "import file")?;
             let mut report = ImportReport::default();
             self.import_file_candidate(path, &mut report, cancel_flag)?;
+            if let Some(progress) = progress.as_deref_mut() {
+                progress(report.scanned_files as u64, None);
+            }
             Ok(report)
         }
     }
@@ -116,7 +143,10 @@ impl Importer {
                 record_unreadable_with_warning(
                     report,
                     path.display(),
-                    format!("file too large: {file_size} > {max_file_import_bytes}"),
+                    ImportRejectionReason::LimitExceeded {
+                        limit: "max_file_import_bytes",
+                        details: format!("{file_size} > {max_file_import_bytes}"),
+                    },
                 );
                 return Ok(None);
             }
@@ -129,7 +159,7 @@ impl Importer {
                 record_unreadable_with_warning(
                     report,
                     path.display(),
-                    format!("opening file: {err}"),
+                    ImportRejectionReason::Unreadable(format!("opening file: {err}")),
                 );
                 return Ok(None);
             }
@@ -151,7 +181,7 @@ impl Importer {
                 record_unreadable_with_warning(
                     report,
                     path.display(),
-                    format!("reading file: {err}"),
+                    ImportRejectionReason::Unreadable(format!("reading file: {err}")),
                 );
                 return Ok(None);
             }
@@ -168,7 +198,7 @@ impl Importer {
                 record_invalid_dicom_with_warning(
                     report,
                     path.display(),
-                    format!("DICOM parse failed: {err}"),
+                    ImportRejectionReason::InvalidDicom(format!("DICOM parse failed: {err}")),
                 );
                 return Ok(None);
             }
@@ -204,7 +234,9 @@ impl Importer {
                     record_invalid_dicom_with_warning(
                         report,
                         source_path,
-                        format!("DICOM validation failed: {err}"),
+                        ImportRejectionReason::InvalidDicom(format!(
+                            "DICOM validation failed: {err}"
+                        )),
                     );
                     Ok(None)
                 }
@@ -259,6 +291,7 @@ mod test_support {
             sqlite_db: base_dir.join("app.sqlite3"),
             managed_store_dir: base_dir.join("store"),
             logs_dir: base_dir.join("logs"),
+            active_log_file: base_dir.join("logs").join("app.log"),
         }
     }
 

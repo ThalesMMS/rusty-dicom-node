@@ -24,7 +24,7 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
@@ -57,6 +57,7 @@ mod modal_handlers;
 mod navigation;
 mod render;
 mod state;
+mod suggestions;
 mod tasks;
 mod terminal;
 

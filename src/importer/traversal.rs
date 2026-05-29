@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufReader, Cursor, Read},
+    io::{BufReader, Read},
     path::Path,
     sync::atomic::AtomicBool,
 };
@@ -11,28 +11,41 @@ use walkdir::WalkDir;
 use zip::ZipArchive;
 
 use crate::{
-    cancel, config::AppConfig, db::InstanceImportStatements, dicom::DefaultFileObject,
-    error::Result, models::ImportReport,
+    cancel,
+    config::AppConfig,
+    db::InstanceImportStatements,
+    dicom::DefaultFileObject,
+    error::{ImportRejectionReason, Result},
+    models::ImportReport,
 };
 
-use super::{persistence::StoreDicomError, Importer};
+use super::{staging::stage_reader_with_sha256, Importer};
 
 impl Importer {
     pub fn import_folder(&self, path: &Path) -> Result<ImportReport> {
-        self.import_folder_with_cancel(path, None)
+        self.import_folder_with_cancel(path, None, None)
     }
 
-    pub(super) fn import_folder_with_cancel(
+    pub(super) fn import_folder_with_cancel<'a>(
         &self,
         path: &Path,
         cancel_flag: Option<&AtomicBool>,
+        mut progress: Option<&'a mut dyn FnMut(u64, Option<u64>)>,
     ) -> Result<ImportReport> {
         let (report, managed_cleanups) = self.db.with_transaction(|conn| {
             let mut stmts = InstanceImportStatements::prepare(conn)?;
             let mut report = ImportReport::default();
             let mut managed_cleanups = Vec::new();
 
-            for entry in WalkDir::new(path).follow_links(false) {
+            let max_total_files = self.config.max_import_total_files;
+            let max_depth = self.config.max_import_directory_depth;
+            let max_path_len = self.config.max_import_path_length;
+
+            let walker = WalkDir::new(path)
+                .follow_links(false)
+                .max_depth(max_depth.unwrap_or(usize::MAX));
+
+            for entry in walker {
                 cancel::ensure_not_cancelled(cancel_flag)?;
                 let entry = match entry {
                     Ok(entry) => entry,
@@ -50,6 +63,35 @@ impl Importer {
                     continue;
                 }
 
+                if let Some(max_path_len) = max_path_len {
+                    let path_str = entry.path().to_string_lossy();
+                    if path_str.len() > max_path_len {
+                        record_unreadable_with_warning(
+                            &mut report,
+                            entry.path().display(),
+                            ImportRejectionReason::LimitExceeded {
+                                limit: "max_import_path_length",
+                                details: format!("{} > {}", path_str.len(), max_path_len),
+                            },
+                        );
+                        continue;
+                    }
+                }
+
+                if let Some(max_total_files) = max_total_files {
+                    if report.scanned_files >= max_total_files {
+                        record_unreadable_with_warning(
+                            &mut report,
+                            path.display(),
+                            ImportRejectionReason::LimitExceeded {
+                                limit: "max_import_total_files",
+                                details: format!("limit is {max_total_files}"),
+                            },
+                        );
+                        return Ok((report, managed_cleanups));
+                    }
+                }
+
                 if let Some(managed_cleanup) = self.import_file_candidate_in_conn(
                     conn,
                     &mut stmts,
@@ -58,6 +100,13 @@ impl Importer {
                     cancel_flag,
                 )? {
                     managed_cleanups.push(managed_cleanup);
+                }
+
+                if let Some(progress) = progress.as_deref_mut() {
+                    progress(
+                        report.scanned_files as u64,
+                        max_total_files.map(|v| v as u64),
+                    );
                 }
             }
 
@@ -70,13 +119,14 @@ impl Importer {
     }
 
     pub fn import_zip(&self, path: &Path) -> Result<ImportReport> {
-        self.import_zip_with_cancel(path, None)
+        self.import_zip_with_cancel(path, None, None)
     }
 
-    pub(super) fn import_zip_with_cancel(
+    pub(super) fn import_zip_with_cancel<'a>(
         &self,
         path: &Path,
         cancel_flag: Option<&AtomicBool>,
+        mut progress: Option<&'a mut dyn FnMut(u64, Option<u64>)>,
     ) -> Result<ImportReport> {
         cancel::ensure_not_cancelled(cancel_flag)?;
         let file = fs::File::open(path)
@@ -86,11 +136,16 @@ impl Importer {
             .with_context(|| format!("opening ZIP archive {}", path.display()))?;
 
         let (report, managed_cleanups) = self.db.with_transaction(|conn| {
+            // Track entry-path collisions within this ZIP so we never overwrite a previously-staged
+            // temp file for a prior entry.
+            let mut seen_entry_paths: std::collections::HashSet<std::path::PathBuf> =
+                std::collections::HashSet::new();
             let mut stmts = InstanceImportStatements::prepare(conn)?;
             let mut report = ImportReport::default();
             let mut extracted_bytes = 0_u64;
-            let mut managed_cleanups = Vec::new();
+            let mut managed_cleanups: Vec<super::staging::FileCleanupGuard> = Vec::new();
 
+            let total_entries = archive.len() as u64;
             for i in 0..archive.len() {
                 cancel::ensure_not_cancelled(cancel_flag)?;
                 if let Some(max_entries) = self.config.max_zip_entry_count {
@@ -114,7 +169,7 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}#{}", path.display(), i),
-                            format!("opening ZIP entry: {err}"),
+                            ImportRejectionReason::CorruptZip(format!("opening ZIP entry: {err}")),
                         );
                         continue;
                     }
@@ -124,6 +179,9 @@ impl Importer {
                     continue;
                 }
                 report.scanned_files += 1;
+                if let Some(progress) = progress.as_deref_mut() {
+                    progress(report.scanned_files as u64, Some(total_entries));
+                }
 
                 let safe_name = match entry.enclosed_name() {
                     Some(name) => name.to_path_buf(),
@@ -131,14 +189,42 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), entry.name()),
-                            "entry path escapes archive",
+                            ImportRejectionReason::UnsafeZipPath(
+                                "entry path escapes archive".to_string(),
+                            ),
                         );
                         continue;
                     }
                 };
 
+                if !seen_entry_paths.insert(safe_name.clone()) {
+                    record_unreadable_with_warning(
+                        &mut report,
+                        format!("zip://{}!{}", path.display(), safe_name.display()),
+                        ImportRejectionReason::DuplicateZipPath(format!(
+                            "ZIP contains multiple entries targeting '{}'",
+                            safe_name.display()
+                        )),
+                    );
+                    continue;
+                }
+
+                if let Some(max_path_len) = self.config.max_import_path_length {
+                    let safe_name_str = safe_name.to_string_lossy();
+                    if safe_name_str.len() > max_path_len {
+                        record_unreadable_with_warning(
+                            &mut report,
+                            format!("zip://{}!{}", path.display(), safe_name.display()),
+                            ImportRejectionReason::LimitExceeded {
+                                limit: "max_import_path_length",
+                                details: format!("{} > {}", safe_name_str.len(), max_path_len),
+                            },
+                        );
+                        continue;
+                    }
+                }
+
                 let entry_size = entry.size();
-                let mut bytes = Vec::new();
                 let read_limit = zip_entry_read_limit(&self.config, extracted_bytes);
                 if let Some(max_entry_bytes) = self.config.max_zip_entry_bytes {
                     if entry_size > max_entry_bytes {
@@ -167,33 +253,50 @@ impl Importer {
                         return Ok((report, managed_cleanups));
                     }
                 }
+
+                // Stream the ZIP entry into a staged temp file in bounded chunks (64 KiB buffers
+                // inside stage_reader_with_sha256) instead of buffering the full entry in memory.
                 cancel::ensure_not_cancelled(cancel_flag)?;
-                let read_result = match read_limit {
-                    Some(read_limit) => entry
-                        .by_ref()
-                        .take(read_limit.saturating_add(1))
-                        .read_to_end(&mut bytes),
-                    None => entry.read_to_end(&mut bytes),
+                let staged_result = match read_limit {
+                    Some(read_limit) => stage_reader_with_sha256(
+                        entry.by_ref().take(read_limit.saturating_add(1)),
+                        &self.paths.managed_store_dir,
+                        &safe_name,
+                        self.config.max_zip_entry_bytes,
+                        cancel_flag,
+                    ),
+                    None => stage_reader_with_sha256(
+                        entry.by_ref(),
+                        &self.paths.managed_store_dir,
+                        &safe_name,
+                        self.config.max_zip_entry_bytes,
+                        cancel_flag,
+                    ),
                 };
-                if let Err(err) = read_result {
-                    record_unreadable_with_warning(
-                        &mut report,
-                        format!("zip://{}!{}", path.display(), safe_name.display()),
-                        format!("reading ZIP entry: {err}"),
-                    );
-                    continue;
-                }
-                let actual_entry_bytes = bytes.len() as u64;
+
+                let (staged_path, sha256_hex, actual_entry_bytes) = match staged_result {
+                    Ok(result) => result,
+                    Err(err) => {
+                        record_unreadable_with_warning(
+                            &mut report,
+                            format!("zip://{}!{}", path.display(), safe_name.display()),
+                            ImportRejectionReason::CorruptZip(format!("reading ZIP entry: {err}")),
+                        );
+                        continue;
+                    }
+                };
+
                 if let Some(max_entry_bytes) = self.config.max_zip_entry_bytes {
                     if actual_entry_bytes > max_entry_bytes {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), safe_name.display()),
-                            format!(
-                                "ZIP entry read {} bytes, exceeding limit {}",
-                                actual_entry_bytes, max_entry_bytes
-                            ),
+                            ImportRejectionReason::LimitExceeded {
+                                limit: "max_zip_entry_bytes",
+                                details: format!("{} > {}", actual_entry_bytes, max_entry_bytes),
+                            },
                         );
+                        let _ = fs::remove_file(&staged_path);
                         continue;
                     }
                 }
@@ -203,51 +306,81 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), safe_name.display()),
-                            format!(
-                                "ZIP total extracted bytes limit exceeded: current total {} plus read bytes {} exceeds limit {}",
-                                extracted_bytes, actual_entry_bytes, max_total_bytes
-                            ),
+                            ImportRejectionReason::LimitExceeded {
+                                limit: "max_zip_total_bytes",
+                                details: format!(
+                                    "current total {} + read bytes {} > {}",
+                                    extracted_bytes, actual_entry_bytes, max_total_bytes
+                                ),
+                            },
                         );
+                        let _ = fs::remove_file(&staged_path);
                         return Ok((report, managed_cleanups));
                     }
                 }
                 extracted_bytes = extracted_bytes.saturating_add(actual_entry_bytes);
 
+                let source_path = format!("zip://{}!{}", path.display(), safe_name.display());
                 cancel::ensure_not_cancelled(cancel_flag)?;
-                let file_obj = match DefaultFileObject::from_reader(Cursor::new(&bytes[..])) {
-                    Ok(file_obj) => file_obj,
+                let staged_file = match fs::File::open(&staged_path) {
+                    Ok(file) => file,
                     Err(err) => {
-                        record_invalid_dicom_with_warning(
+                        record_unreadable_with_warning(
                             &mut report,
-                            format!("zip://{}!{}", path.display(), safe_name.display()),
-                            format!("DICOM parse failed: {err}"),
+                            source_path,
+                            ImportRejectionReason::Unreadable(format!("opening staged file: {err}")),
                         );
                         continue;
                     }
                 };
 
-                let source_path = format!("zip://{}!{}", path.display(), safe_name.display());
                 cancel::ensure_not_cancelled(cancel_flag)?;
-                match self.store_valid_dicom_bytes_in_conn(
+                let file_obj = match DefaultFileObject::from_reader(staged_file) {
+                    Ok(file_obj) => file_obj,
+                    Err(err) => {
+                        record_invalid_dicom_with_warning(
+                            &mut report,
+                            source_path.clone(),
+                            ImportRejectionReason::InvalidDicom(format!("DICOM parse failed: {err}")),
+                        );
+                        let _ = fs::remove_file(&staged_path);
+                        continue;
+                    }
+                };
+
+                let store_result = self.store_valid_dicom_file_in_conn(
                     conn,
                     &mut stmts,
+                    staged_path.as_path(),
+                    sha256_hex,
+                    actual_entry_bytes,
                     file_obj,
-                    bytes,
                     source_path.clone(),
                     &mut report,
-                ) {
+                );
+
+                match store_result {
                     Ok(Some(managed_cleanup)) => managed_cleanups.push(managed_cleanup),
-                    Ok(None) => {}
+                    Ok(None) => {
+                        // Either duplicate (staged file moved into place) or validation failure.
+                        // In the duplicate case, store_valid_dicom_file_in_conn will have moved the
+                        // staged file into the managed store, so no staged temp remains.
+                        // In the validation failure case, it won't have moved the staged file, so
+                        // clean it up.
+                        let _ = fs::remove_file(&staged_path);
+                    }
                     Err(err) => match err {
-                        StoreDicomError::InvalidDicom(err) => {
+                        super::persistence::StoreDicomError::InvalidDicom(err) => {
                             record_invalid_dicom_with_warning(
                                 &mut report,
                                 source_path,
-                                format!("DICOM validation failed: {err}"),
+                                ImportRejectionReason::InvalidDicom(format!(
+                                    "DICOM validation failed: {err}"
+                                )),
                             );
-                            continue;
+                            let _ = fs::remove_file(&staged_path);
                         }
-                        StoreDicomError::Fatal(err) => return Err(err),
+                        super::persistence::StoreDicomError::Fatal(err) => return Err(err),
                     },
                 }
             }
@@ -294,6 +427,20 @@ pub(super) fn record_invalid_dicom_with_warning(
     report.record_invalid_dicom(source, reason);
 }
 
+#[cfg(test)]
+mod rejection_reason_tests {
+    use crate::error::ImportRejectionReason;
+
+    #[test]
+    fn import_rejection_reason_renders_limit_exceeded() {
+        let reason = ImportRejectionReason::LimitExceeded {
+            limit: "max_zip_total_bytes",
+            details: "1 > 0".to_string(),
+        };
+        assert_eq!(reason.to_string(), "max_zip_total_bytes exceeded: 1 > 0");
+    }
+}
+
 pub(super) fn validate_readable_dir(path: &Path) -> Result<()> {
     fs::read_dir(path)
         .with_context(|| format!("reading import directory {}", path.display()))
@@ -335,8 +482,8 @@ mod tests {
     use crate::config::AppConfig;
 
     use super::super::test_support::{
-        dicom_bytes_missing_required_uids, test_importer, write_zip, write_zip_with_directory,
-        zip_path,
+        dicom_bytes_missing_required_uids, staged_files, test_importer, write_zip,
+        write_zip_with_directory, zip_path,
     };
 
     #[test]
@@ -444,6 +591,107 @@ mod tests {
             failure.contains("DICOM validation failed")
                 && failure.contains("required DICOM attribute missing")
         }));
+        assert!(
+            staged_files(&importer).is_empty(),
+            "expected no staged files after store validation failure"
+        );
+    }
+
+    #[test]
+    fn import_zip_imports_valid_dicom_entry_and_persists_sha256() {
+        use sha2::{Digest, Sha256};
+
+        let (root, importer) = test_importer(AppConfig::default());
+
+        let sop_instance_uid = "1.2.826.0.1.3680043.10.999.123";
+        let dicom_path = root.path().join("entry.dcm");
+        super::super::test_support::write_valid_dicom_with_pixel_data(
+            &dicom_path,
+            sop_instance_uid,
+        );
+        let dicom_bytes = std::fs::read(&dicom_path).expect("read test dicom");
+
+        let mut hasher = Sha256::new();
+        hasher.update(&dicom_bytes);
+        let expected_sha256 = format!("{:x}", hasher.finalize());
+
+        let zip_path = zip_path(&root);
+        write_zip(&zip_path, &[("entry.dcm", &dicom_bytes)]);
+
+        let report = importer.import_path(&zip_path).expect("import zip");
+
+        assert_eq!(report.scanned_files, 1);
+        assert_eq!(report.accepted, 1);
+        assert_eq!(report.invalid_dicom, 0);
+
+        let exists = importer
+            .db
+            .instance_exists(sop_instance_uid, &expected_sha256)
+            .expect("db instance_exists");
+        assert!(
+            exists,
+            "expected imported instance to exist with matching SHA-256"
+        );
+    }
+
+    #[test]
+    fn import_zip_large_entry_does_not_trip_entry_read_limit() {
+        // Regression test for avoiding full ZIP entry buffering.
+        // If ZIP import were still reading entries into memory, large entries would either
+        // (a) blow memory or (b) hit per-entry limits early. With streaming staging,
+        // a large entry under the configured limit should import successfully.
+
+        let config = AppConfig {
+            // Large enough to require multiple read iterations (stage_reader_with_sha256 uses 64KiB).
+            max_zip_entry_bytes: Some(200_000),
+            max_zip_total_bytes: None,
+            max_zip_entry_count: None,
+            ..AppConfig::default()
+        };
+        let (root, importer) = test_importer(config);
+
+        let sop_instance_uid = "1.2.826.0.1.3680043.10.999.124";
+        let dicom_path = root.path().join("large-entry.dcm");
+        super::super::test_support::write_valid_dicom_with_pixel_data(
+            &dicom_path,
+            sop_instance_uid,
+        );
+
+        // Pad the file with extra Pixel Data so it's large but remains valid DICOM.
+        // This forces the import pipeline to stream multiple 64KiB chunks.
+        {
+            use dicom_core::{DataElement, PrimitiveValue, VR};
+            use dicom_dictionary_std::tags;
+            use dicom_object::open_file;
+
+            let mut obj = open_file(&dicom_path).expect("open generated DICOM");
+            obj.put(DataElement::new(
+                tags::PIXEL_DATA,
+                VR::OB,
+                PrimitiveValue::from(vec![0x55_u8; 150_000]),
+            ));
+            obj.write_to_file(&dicom_path)
+                .expect("rewrite padded DICOM");
+        }
+
+        let dicom_bytes = std::fs::read(&dicom_path).expect("read test dicom");
+        assert!(
+            dicom_bytes.len() > 128 * 1024,
+            "expected > 128KiB test entry"
+        );
+        assert!(
+            dicom_bytes.len() <= 200_000,
+            "expected test entry within configured limit"
+        );
+
+        let zip_path = zip_path(&root);
+        write_zip(&zip_path, &[("large-entry.dcm", &dicom_bytes)]);
+
+        let report = importer.import_path(&zip_path).expect("import zip");
+
+        assert_eq!(report.scanned_files, 1);
+        assert_eq!(report.accepted, 1);
+        assert_eq!(report.rejected(), 0);
     }
 }
 

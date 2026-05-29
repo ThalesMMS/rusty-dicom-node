@@ -22,7 +22,7 @@ use dicom_ul::association::ServerAssociationOptions;
 
 use super::{
     bind_test_listener, element_string, is_preflight_probe, negotiated_transfer_syntax,
-    next_dimse_message, send_command, send_command_and_dataset,
+    next_dimse_message, send_command, send_command_and_dataset, send_dataset_fragments_for_test,
 };
 use crate::common::services::remote_node_fixture;
 
@@ -39,11 +39,21 @@ pub struct ReceivedQuery {
     pub study_description: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MalformedResponseMode {
+    MissingStatus,
+    InvalidCommandField,
+    CloseAfterFirstPending,
+}
+
 #[derive(Debug)]
 pub struct QueryScpBuilder {
     ae_title: String,
     port: u16,
     matches: Vec<QueryMatch>,
+    response_dataset_fragments: Option<Vec<usize>>,
+    hold_final_response: bool,
+    malformed_response_mode: Option<MalformedResponseMode>,
 }
 
 #[derive(Debug)]
@@ -61,6 +71,9 @@ impl QueryScpBuilder {
             ae_title: "QUERYSCP".to_string(),
             port: 0,
             matches: Vec::new(),
+            response_dataset_fragments: None,
+            hold_final_response: false,
+            malformed_response_mode: None,
         })
     }
 
@@ -79,6 +92,21 @@ impl QueryScpBuilder {
         self
     }
 
+    pub fn response_dataset_fragments(mut self, fragments: Vec<usize>) -> Self {
+        self.response_dataset_fragments = Some(fragments);
+        self
+    }
+
+    pub fn hold_final_response(mut self, hold: bool) -> Self {
+        self.hold_final_response = hold;
+        self
+    }
+
+    pub fn malformed_response_mode(mut self, mode: MalformedResponseMode) -> Self {
+        self.malformed_response_mode = Some(mode);
+        self
+    }
+
     pub fn spawn(self) -> anyhow::Result<QueryScp> {
         let listener = bind_test_listener(self.port)?;
         let port = listener
@@ -92,6 +120,9 @@ impl QueryScpBuilder {
         let ae_title = self.ae_title.clone();
         let matches = Arc::new(self.matches);
         let thread_matches = matches.clone();
+        let response_dataset_fragments = self.response_dataset_fragments.clone();
+        let hold_final_response = self.hold_final_response;
+        let malformed_response_mode = self.malformed_response_mode;
 
         let join_handle = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
@@ -102,6 +133,9 @@ impl QueryScpBuilder {
                             &ae_title,
                             thread_matches.as_ref(),
                             &thread_received,
+                            response_dataset_fragments.as_deref(),
+                            hold_final_response,
+                            malformed_response_mode,
                         )?;
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -157,7 +191,20 @@ fn handle_query_connection(
     ae_title: &str,
     matches: &[QueryMatch],
     received: &Arc<Mutex<Vec<ReceivedQuery>>>,
+    response_dataset_fragments: Option<&[usize]>,
+    hold_final_response: bool,
+    malformed_response_mode: Option<MalformedResponseMode>,
 ) -> anyhow::Result<()> {
+    if matches!(
+        malformed_response_mode,
+        Some(MalformedResponseMode::CloseAfterFirstPending)
+    ) && matches.is_empty()
+    {
+        return Err(anyhow!(
+            "CloseAfterFirstPending requires at least one QueryMatch so a pending response can be sent"
+        ));
+    }
+
     stream
         .set_nonblocking(false)
         .context("setting query SCP stream blocking")?;
@@ -218,27 +265,88 @@ fn handle_query_connection(
                     .iter()
                     .filter(|query_match| query_matches_identifier(query_match, &identifier))
                 {
-                    let response = find_response_command(message_id, &sop_class_uid, 0xFF00, true);
+                    let response = match malformed_response_mode {
+                        Some(MalformedResponseMode::MissingStatus) => {
+                            find_response_command_missing_status(message_id, &sop_class_uid, true)
+                        }
+                        Some(MalformedResponseMode::InvalidCommandField) => {
+                            find_response_command_invalid_command_field(
+                                message_id,
+                                &sop_class_uid,
+                                0xFF00,
+                                true,
+                            )
+                        }
+                        Some(MalformedResponseMode::CloseAfterFirstPending) | None => {
+                            find_response_command(message_id, &sop_class_uid, 0xFF00, true)
+                        }
+                    };
                     let response_dataset = dataset_from_query_match(query_match);
                     let mut dataset_bytes = Vec::new();
                     response_dataset
                         .write_dataset_with_ts(&mut dataset_bytes, transfer_syntax)
                         .context("writing C-FIND response dataset")?;
-                    send_command_and_dataset(
-                        &mut association,
-                        message.presentation_context_id,
-                        &response,
-                        dataset_bytes,
-                    )?;
+                    match response_dataset_fragments {
+                        Some(sizes) => {
+                            send_command(
+                                &mut association,
+                                message.presentation_context_id,
+                                &response,
+                            )?;
+                            send_dataset_fragments_for_test(
+                                &mut association,
+                                message.presentation_context_id,
+                                dataset_bytes,
+                                sizes,
+                            )?;
+                        }
+                        None => {
+                            send_command_and_dataset(
+                                &mut association,
+                                message.presentation_context_id,
+                                &response,
+                                dataset_bytes,
+                            )?;
+                        }
+                    }
+
+                    if matches!(
+                        malformed_response_mode,
+                        Some(MalformedResponseMode::CloseAfterFirstPending)
+                    ) {
+                        // Abruptly close the connection mid-response.
+                        // The SCU should surface this as a transport interruption.
+                        drop(association);
+                        return Ok(());
+                    }
                 }
 
-                let final_response =
-                    find_response_command(message_id, &sop_class_uid, 0x0000, false);
-                send_command(
-                    &mut association,
-                    message.presentation_context_id,
-                    &final_response,
-                )?;
+                if hold_final_response {
+                    // Withhold the final response and close the connection.
+                    // The SCU should surface this distinctly from a timeout.
+                } else {
+                    let final_response = match malformed_response_mode {
+                        Some(MalformedResponseMode::MissingStatus) => {
+                            find_response_command_missing_status(message_id, &sop_class_uid, false)
+                        }
+                        Some(MalformedResponseMode::InvalidCommandField) => {
+                            find_response_command_invalid_command_field(
+                                message_id,
+                                &sop_class_uid,
+                                0x0000,
+                                false,
+                            )
+                        }
+                        Some(MalformedResponseMode::CloseAfterFirstPending) | None => {
+                            find_response_command(message_id, &sop_class_uid, 0x0000, false)
+                        }
+                    };
+                    send_command(
+                        &mut association,
+                        message.presentation_context_id,
+                        &final_response,
+                    )?;
+                }
             }
             other => return Err(anyhow!("unsupported query SCP command 0x{other:04X}")),
         }
@@ -355,6 +463,58 @@ fn find_response_command(
             PrimitiveValue::from(sop_class_uid),
         ),
         DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8020])),
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [if has_dataset { 0x0000 } else { 0x0101 }]),
+        ),
+        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [status])),
+    ])
+}
+
+fn find_response_command_missing_status(
+    message_id: u16,
+    sop_class_uid: &str,
+    has_dataset: bool,
+) -> DefaultMemObject {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from(sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8020])),
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [if has_dataset { 0x0000 } else { 0x0101 }]),
+        ),
+    ])
+}
+
+fn find_response_command_invalid_command_field(
+    message_id: u16,
+    sop_class_uid: &str,
+    status: u16,
+    has_dataset: bool,
+) -> DefaultMemObject {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from(sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0xFFFF])),
         DataElement::new(
             tags::MESSAGE_ID_BEING_RESPONDED_TO,
             VR::US,

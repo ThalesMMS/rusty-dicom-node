@@ -17,6 +17,32 @@ fn view_exposes_running_task_snapshot() {
 }
 
 #[test]
+fn view_does_not_clone_large_collections_per_frame() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+
+    // Populate large-ish collections. This test is not about performance numbers;
+    // it guards against regressions to per-frame deep cloning by asserting that
+    // `view()` returns borrowed slices into app state.
+    app.logs = (0..2000).map(|i| format!("log line {i}")).collect();
+
+    let logs_ptr = app.logs.as_ptr();
+    let logs_len = app.logs.len();
+
+    {
+        let view = app.view();
+        assert!(std::ptr::eq(view.logs.as_ptr(), logs_ptr));
+        assert_eq!(view.logs.len(), logs_len);
+    }
+
+    {
+        let view = app.view();
+        assert!(std::ptr::eq(view.logs.as_ptr(), logs_ptr));
+        assert_eq!(view.logs.len(), logs_len);
+    }
+}
+
+#[test]
 fn handle_task_result_updates_query_state_and_clears_running_task() {
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
@@ -110,14 +136,16 @@ fn apply_cancelled_task_event_moves_task_to_history() {
         started_at: Some(created_at),
         finished_at: None,
         progress: None,
+        outcome: None,
+        summary: None,
     });
     let (sender, receiver) = std::sync::mpsc::channel();
     drop(sender);
     app.task_runner.receiver = Some(receiver);
     app.task_runner.active_task_kind = Some(ActiveTaskKind::Query);
     app.task_runner.active_task_id = Some(7);
-    app.task_runner.active_cancel_flag = Some(std::sync::Arc::new(
-        std::sync::atomic::AtomicBool::new(true),
+    app.task_runner.active_cancel_handle = Some(crate::tui::tasks::CancelHandle::new(
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     ));
 
     app.apply_task_event(TaskEvent::Cancelled {
@@ -131,13 +159,14 @@ fn apply_cancelled_task_event_moves_task_to_history() {
     assert_eq!(app.task_history.len(), 1);
     assert_eq!(app.task_history[0].id, 7);
     assert_eq!(app.task_history[0].status, TaskStatus::Cancelled);
+    assert_eq!(app.task_history[0].outcome, Some(TaskOutcome::Cancelled));
     assert_eq!(app.task_history[0].finished_at, Some(finished_at));
     assert_eq!(app.last_task_error.as_deref(), Some("cancelled"));
     assert!(app.running_task.is_none());
     assert!(app.task_runner.receiver.is_none());
     assert!(app.task_runner.active_task_kind.is_none());
     assert!(app.task_runner.active_task_id.is_none());
-    assert!(app.task_runner.active_cancel_flag.is_none());
+    assert!(app.task_runner.active_cancel_handle.is_none());
 }
 
 #[test]
@@ -155,6 +184,8 @@ fn apply_cancelled_task_event_preserves_pending_real_result() {
         started_at: Some(created_at),
         finished_at: None,
         progress: None,
+        outcome: None,
+        summary: None,
     });
 
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -174,6 +205,7 @@ fn apply_cancelled_task_event_preserves_pending_real_result() {
     assert_eq!(app.task_history.len(), 1);
     assert_eq!(app.task_history[0].id, 7);
     assert_eq!(app.task_history[0].status, TaskStatus::Succeeded);
+    assert_eq!(app.task_history[0].outcome, Some(TaskOutcome::Succeeded));
     assert_eq!(app.query_results.len(), 0);
     assert_eq!(app.last_task_error.as_deref(), Some("cancelled"));
     assert!(app.task_runner.receiver.is_none());
@@ -328,10 +360,14 @@ fn handle_task_result_import_ok_logs_report_fields() {
         scanned_files: 10,
         accepted: 8,
         duplicates: 1,
+        duplicate_by_sop_instance_uid: 0,
+        duplicate_by_sha256: 0,
         unreadable: 0,
         invalid_dicom: 1,
         failures: Vec::new(),
         stored_bytes: 4096,
+        skipped: 0,
+        failed_cleanup: 0,
     };
     app.handle_task_result(TaskResult::Import(Ok(report)))
         .unwrap();
@@ -358,10 +394,14 @@ fn handle_task_result_import_ok_logs_failures_and_truncates_at_five() {
         scanned_files: 7,
         accepted: 0,
         duplicates: 0,
+        duplicate_by_sop_instance_uid: 0,
+        duplicate_by_sha256: 0,
         unreadable: 7,
         invalid_dicom: 0,
         failures,
         stored_bytes: 0,
+        skipped: 0,
+        failed_cleanup: 0,
     };
     app.handle_task_result(TaskResult::Import(Ok(report)))
         .unwrap();
@@ -495,7 +535,7 @@ fn is_busy_reflects_running_task_presence() {
 #[test]
 fn view_has_no_running_task_when_idle() {
     let services = test_services();
-    let app = TuiApp::new(services.services.clone());
+    let mut app = TuiApp::new(services.services.clone());
 
     let view = app.view();
     assert!(view.running_task.is_none());

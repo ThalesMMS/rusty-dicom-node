@@ -137,12 +137,22 @@ impl TuiApp {
                 }
             }
             KeyCode::Enter => {
-                if !self.ensure_not_busy() {
-                    return Ok(true);
-                }
-
                 if let Err(error) = validate_query_form(form) {
                     form.error = Some(error.to_string());
+                    form.touched.extend([
+                        QueryField::Model,
+                        QueryField::Level,
+                        QueryField::PatientName,
+                        QueryField::PatientId,
+                        QueryField::AccessionNumber,
+                        QueryField::StudyUid,
+                        QueryField::SeriesUid,
+                        QueryField::SopInstanceUid,
+                        QueryField::DateFrom,
+                        QueryField::DateTo,
+                        QueryField::Modality,
+                        QueryField::StudyDescription,
+                    ]);
                     return Ok(true);
                 }
 
@@ -210,14 +220,18 @@ impl TuiApp {
                 }
             }
             KeyCode::Enter => {
-                if !self.ensure_not_busy() {
-                    return Ok(true);
-                }
-
                 let request = match build_move_request(form) {
                     Ok(request) => request,
                     Err(error) => {
                         form.error = Some(error.to_string());
+                        form.touched.extend([
+                            RetrieveField::Model,
+                            RetrieveField::Level,
+                            RetrieveField::StudyUid,
+                            RetrieveField::SeriesUid,
+                            RetrieveField::InstanceUid,
+                            RetrieveField::Destination,
+                        ]);
                         return Ok(true);
                     }
                 };
@@ -262,22 +276,16 @@ impl TuiApp {
                     form.error = None;
                 }
             }
-            KeyCode::Enter => {
-                if !self.ensure_not_busy() {
+            KeyCode::Enter => match build_import_path(form) {
+                Ok(path) => {
+                    self.start_task(BackgroundTask::Import { path })?;
+                    return Ok(false);
+                }
+                Err(error) => {
+                    form.error = Some(error.to_string());
                     return Ok(true);
                 }
-
-                match build_import_path(form) {
-                    Ok(path) => {
-                        self.start_task(BackgroundTask::Import { path })?;
-                        return Ok(false);
-                    }
-                    Err(error) => {
-                        form.error = Some(error.to_string());
-                        return Ok(true);
-                    }
-                }
-            }
+            },
             KeyCode::Char(ch) => {
                 let active = form.active;
                 form.touched.insert(active);
@@ -330,14 +338,15 @@ impl TuiApp {
                 }
             }
             KeyCode::Enter => {
-                if !self.ensure_not_busy() {
-                    return Ok(true);
-                }
-
                 let (kind, uid, destination_node) = match build_send_request(form) {
                     Ok(values) => values,
                     Err(error) => {
                         form.error = Some(error.to_string());
+                        form.touched.extend([
+                            SendField::Kind,
+                            SendField::Uid,
+                            SendField::DestinationNode,
+                        ]);
                         return Ok(true);
                     }
                 };
@@ -413,6 +422,19 @@ impl TuiApp {
                     Ok(cfg) => cfg,
                     Err(error) => {
                         form.error = Some(error.to_string());
+                        form.touched.extend([
+                            StorageScpField::LocalAeTitle,
+                            StorageScpField::BindAddr,
+                            StorageScpField::Port,
+                            StorageScpField::AllowPromiscuous,
+                            StorageScpField::StrictPdu,
+                            StorageScpField::MaxPduLength,
+                            StorageScpField::MaxFileImportBytes,
+                            StorageScpField::MaxZipEntryBytes,
+                            StorageScpField::MaxZipTotalBytes,
+                            StorageScpField::MaxZipEntryCount,
+                            StorageScpField::MaxStoreObjectBytes,
+                        ]);
                         return Ok(true);
                     }
                 };
@@ -445,6 +467,12 @@ impl TuiApp {
             Ok(values) => values,
             Err(error) => {
                 form.error = Some(error.to_string());
+                form.touched.extend([
+                    NodeField::Name,
+                    NodeField::AeTitle,
+                    NodeField::Host,
+                    NodeField::Port,
+                ]);
                 return Ok(false);
             }
         };

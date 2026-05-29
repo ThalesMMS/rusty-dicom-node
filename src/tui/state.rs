@@ -60,36 +60,36 @@ impl FocusPane {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct TuiView {
+#[derive(Debug)]
+pub(super) struct TuiView<'a> {
     pub(super) status: TuiStatusSnapshot,
     pub(super) focus: FocusPane,
-    pub(super) nodes: Vec<RemoteNode>,
+    pub(super) nodes: &'a [RemoteNode],
     pub(super) selected_node: Option<usize>,
-    pub(super) local_studies: Vec<StudySummary>,
+    pub(super) local_studies: &'a [StudySummary],
     pub(super) selected_local_study: Option<usize>,
-    pub(super) local_series: Vec<SeriesSummary>,
+    pub(super) local_series: &'a [SeriesSummary],
     pub(super) selected_local_series: Option<usize>,
-    pub(super) local_instances: Vec<LocalInstance>,
+    pub(super) local_instances: &'a [LocalInstance],
     pub(super) selected_local_instance: Option<usize>,
     pub(super) local_drill_down: bool,
-    pub(super) drill_down_study_uid: Option<String>,
+    pub(super) drill_down_study_uid: Option<&'a str>,
     pub(super) local_instance_drill_down: bool,
-    pub(super) query_results: Vec<QueryMatch>,
+    pub(super) query_results: &'a [QueryMatch],
     pub(super) selected_query_result: Option<usize>,
-    pub(super) query_context_node: Option<RemoteNode>,
-    pub(super) query_context_node_name: Option<String>,
+    pub(super) query_context_node: Option<&'a RemoteNode>,
+    pub(super) query_context_node_name: Option<&'a str>,
     pub(super) detail_scroll: u16,
     pub(super) input_content: String,
     pub(super) input_cursor: usize,
-    pub(super) logs: Vec<String>,
+    pub(super) logs: &'a [String],
     pub(super) running_task: Option<RunningTaskView>,
-    pub(super) queued_tasks: Vec<TaskInfo>,
+    pub(super) queued_tasks: &'a [TaskInfo],
     #[allow(
         dead_code,
         reason = "view exposes task history for renderer/tests before the task pane renders it"
     )]
-    pub(super) task_history: Vec<TaskInfo>,
+    pub(super) task_history: &'a [TaskInfo],
     #[allow(
         dead_code,
         reason = "view exposes task selection for renderer/tests before the task pane renders it"
@@ -101,7 +101,7 @@ pub(super) struct TuiView {
     )]
     pub(super) selected_task_scope: TaskListScope,
     pub(super) show_help: bool,
-    pub(super) modal: Option<ModalState>,
+    pub(super) modal: Option<&'a ModalState>,
 }
 
 pub(super) struct TuiApp {

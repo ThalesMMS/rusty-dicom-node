@@ -16,6 +16,7 @@ fn c_find_returns_filtered_study_and_series_matches() {
         let query_scp = QueryScp::builder()
             .expect("build query scp")
             .matches(fixtures.clone())
+            .response_dataset_fragments(vec![1, 2, 3, 4, 5, 7, 11])
             .spawn()
             .expect("spawn query scp");
         let services = TestServices::new().expect("create test services");

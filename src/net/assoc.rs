@@ -22,6 +22,45 @@ use tracing::{debug, warn};
 
 use crate::{cancel, dicom::DefaultMemObject, error::Result, models::RemoteNode};
 
+fn classify_assoc_establish_error(
+    err: dicom_ul::association::Error,
+    node: &RemoteNode,
+    addr: &str,
+) -> anyhow::Error {
+    let mut msg = format!(
+        "association negotiation failed with {} ({}); hint: verify called AE title, presentation contexts/transfer syntaxes, and that the peer accepts associations",
+        node.name, addr
+    );
+
+    if let Some(source) = err.source() {
+        msg.push_str(&format!(": {source}"));
+    }
+
+    anyhow!(msg)
+}
+
+pub fn classify_assoc_receive_error(err: dicom_ul::association::Error) -> anyhow::Error {
+    let io_err = err
+        .source()
+        .and_then(|source| source.downcast_ref::<std::io::Error>());
+
+    if let Some(io_err) = io_err {
+        match io_err.kind() {
+            std::io::ErrorKind::TimedOut => {
+                return anyhow!("timeout waiting for DIMSE response; hint: check network connectivity, AE title/host/port, and peer responsiveness")
+                    .context("association receive");
+            }
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset => {
+                return anyhow!("transport interruption while waiting for DIMSE response; hint: peer closed the connection or a network middlebox reset it")
+                    .context("association receive");
+            }
+            _ => {}
+        }
+    }
+
+    anyhow::Error::from(err).context("association receive")
+}
+
 const DEFAULT_ASSOCIATION_IO_TIMEOUT: Duration = Duration::from_secs(60);
 const CANCELLABLE_ASSOCIATION_IO_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -41,6 +80,21 @@ pub struct NegotiatedContext {
     pub transfer_syntax: String,
 }
 
+/// Accumulate P-DATA PDV payload bytes until a complete DIMSE fragment is assembled.
+///
+/// ## Reassembly contract
+///
+/// - Each DIMSE message part (command set, and optionally data set) may be split across
+///   multiple P-DATA PDVs.
+/// - Callers must feed PDVs of the same `PDataValueType` (Command vs Data) into the same
+///   accumulator instance.
+/// - The accumulator becomes **complete** once it receives a PDV with `is_last = true`.
+/// - Once complete, callers must `take()`/`take_command()` to reset the accumulator before
+///   feeding additional PDVs for the next message part.
+/// - Feeding additional PDVs into a complete accumulator is a logic error and returns an error.
+///
+/// This struct intentionally does not enforce a maximum size; callers should apply any
+/// size/timeout limits at the receive-loop level.
 #[derive(Debug, Clone, Default)]
 pub struct PDataAccumulator {
     buffer: Vec<u8>,
@@ -55,7 +109,7 @@ impl PDataAccumulator {
     pub fn feed(&mut self, value: &PDataValue) -> Result<()> {
         if self.is_complete {
             return Err(anyhow!(
-                "cannot feed P-DATA fragment into a complete accumulator"
+                "cannot feed P-DATA fragment into a complete accumulator (missing take())"
             ));
         }
 
@@ -154,10 +208,7 @@ impl ChunkedChannelWriter {
     pub fn fail_with_message(mut self, message: String) {
         self.buf.clear();
         if let Some(tx) = self.tx.take() {
-            let _ = tx.send(ChannelMsg::Error(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                message,
-            ))));
+            let _ = tx.send(ChannelMsg::Error(Box::new(std::io::Error::other(message))));
         }
     }
 }
@@ -235,7 +286,7 @@ impl Read for ChannelChunkReader {
                     self.done = true;
                 }
                 Ok(ChannelMsg::Error(err)) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, err));
+                    return Err(std::io::Error::other(err));
                 }
                 Err(_) => {
                     return Err(std::io::Error::new(
@@ -295,7 +346,7 @@ impl AssociationFactory {
         let addr = format!("{}@{}:{}", node.ae_title, node.host, node.port);
         let association = options
             .establish_with(&addr)
-            .with_context(|| format!("establishing association with {} ({})", node.name, addr))?;
+            .map_err(|err| classify_assoc_establish_error(err, node, &addr))?;
 
         Ok(association)
     }
@@ -325,7 +376,7 @@ impl AssociationFactory {
         let addr = format!("{}@{}:{}", node.ae_title, node.host, node.port);
         let association = options
             .establish_with(&addr)
-            .with_context(|| format!("establishing association with {} ({})", node.name, addr))?;
+            .map_err(|err| classify_assoc_establish_error(err, node, &addr))?;
 
         Ok(association)
     }
@@ -358,7 +409,7 @@ impl AssociationFactory {
         let addr = format!("{}@{}:{}", node.ae_title, node.host, node.port);
         let mut association = options
             .establish_with(&addr)
-            .with_context(|| format!("establishing association with {} ({})", node.name, addr))?;
+            .map_err(|err| classify_assoc_establish_error(err, node, &addr))?;
 
         cancel::ensure_not_cancelled(Some(cancel_flag))?;
         association
@@ -634,7 +685,7 @@ fn validate_dataset_payload(len: usize) -> Result<()> {
     if len == 0 {
         return Err(empty_dataset_error());
     }
-    if len % 2 != 0 {
+    if !len.is_multiple_of(2) {
         return Err(anyhow!(
             "encoded dataset ended with an odd-length trailing fragment"
         ));
@@ -1049,8 +1100,7 @@ mod tests {
     #[test]
     fn channel_chunk_reader_reports_producer_error() {
         let (tx, rx) = mpsc::sync_channel(1);
-        tx.send(super::ChannelMsg::Error(Box::new(io::Error::new(
-            io::ErrorKind::Other,
+        tx.send(super::ChannelMsg::Error(Box::new(io::Error::other(
             "serializer failed",
         ))))
         .unwrap();

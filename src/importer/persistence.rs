@@ -12,10 +12,7 @@ use crate::{
 
 use rusqlite::Connection;
 
-use super::{
-    staging::{replace_file, sha256_hex, FileCleanupGuard},
-    Importer,
-};
+use super::{staging::replace_file, staging::FileCleanupGuard, Importer};
 
 pub(super) type StoreDicomResult<T> = std::result::Result<T, StoreDicomError>;
 
@@ -90,9 +87,22 @@ impl Importer {
                 .map_err(StoreDicomError::Fatal)?;
         }
 
-        if Database::instance_exists_with_statements(stmts, &sop_instance_uid, &sha256)
-            .map_err(StoreDicomError::Fatal)?
+        if let Some(duplicate_reason) =
+            Database::instance_duplicate_reason_with_statements(stmts, &sop_instance_uid, &sha256)
+                .map_err(StoreDicomError::Fatal)?
         {
+            match duplicate_reason {
+                crate::models::DuplicateReason::SopInstanceUid => {
+                    report.duplicate_by_sop_instance_uid += 1;
+                }
+                crate::models::DuplicateReason::Sha256 => {
+                    report.duplicate_by_sha256 += 1;
+                }
+                crate::models::DuplicateReason::SopInstanceUidAndSha256 => {
+                    report.duplicate_by_sop_instance_uid += 1;
+                    report.duplicate_by_sha256 += 1;
+                }
+            }
             report.duplicates += 1;
             return Ok(None);
         }
@@ -118,66 +128,6 @@ impl Importer {
         report.stored_bytes += file_size_bytes;
         Ok(Some(managed_cleanup))
     }
-
-    pub(super) fn store_valid_dicom_bytes_in_conn(
-        &self,
-        conn: &Connection,
-        stmts: &mut InstanceImportStatements<'_>,
-        file_obj: DefaultFileObject,
-        raw_bytes: Vec<u8>,
-        source_path: String,
-        report: &mut ImportReport,
-    ) -> StoreDicomResult<Option<FileCleanupGuard>> {
-        debug_assert!(!conn.is_autocommit());
-        let sha256 = sha256_hex(&raw_bytes);
-        let study_instance_uid = crate::dicom::required_str(&file_obj, tags::STUDY_INSTANCE_UID)
-            .map_err(StoreDicomError::InvalidDicom)?;
-        let series_instance_uid = crate::dicom::required_str(&file_obj, tags::SERIES_INSTANCE_UID)
-            .map_err(StoreDicomError::InvalidDicom)?;
-        let sop_instance_uid = file_obj.meta().media_storage_sop_instance_uid().to_string();
-
-        if Database::instance_exists_with_statements(stmts, &sop_instance_uid, &sha256)
-            .map_err(StoreDicomError::Fatal)?
-        {
-            report.duplicates += 1;
-            return Ok(None);
-        }
-
-        let managed_path = managed_file_path(
-            &self.paths.managed_store_dir,
-            &study_instance_uid,
-            &series_instance_uid,
-            &sop_instance_uid,
-        );
-
-        if let Some(parent) = managed_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))
-                .map_err(StoreDicomError::Fatal)?;
-        }
-
-        let managed_cleanup = FileCleanupGuard::new(&managed_path);
-        fs::write(&managed_path, &raw_bytes)
-            .with_context(|| format!("writing {}", managed_path.display()))
-            .map_err(StoreDicomError::Fatal)?;
-
-        let imported_at = now_utc_string();
-        let instance = extract_local_instance(
-            &file_obj,
-            source_path,
-            &managed_path,
-            sha256,
-            raw_bytes.len() as u64,
-            Some(imported_at),
-        )
-        .map_err(StoreDicomError::InvalidDicom)?;
-
-        Database::upsert_instance_with_statements(stmts, &instance)
-            .map_err(StoreDicomError::Fatal)?;
-        report.accepted += 1;
-        report.stored_bytes += raw_bytes.len() as u64;
-        Ok(Some(managed_cleanup))
-    }
 }
 
 #[cfg(test)]
@@ -198,12 +148,9 @@ mod tests {
         models::ImportReport,
     };
 
-    use super::super::{
-        staging::sha256_hex,
-        test_support::{
-            dicom_bytes_missing_required_uids, staged_files, test_importer,
-            write_valid_dicom_with_pixel_data,
-        },
+    use super::super::test_support::{
+        dicom_bytes_missing_required_uids, staged_files, test_importer,
+        write_valid_dicom_with_pixel_data,
     };
 
     #[test]
@@ -253,7 +200,6 @@ mod tests {
         let (root, importer) = test_importer(AppConfig::default());
         let staged_path = root.path().join("staged.dcm");
         write_valid_dicom_with_pixel_data(&staged_path, "1.2.826.0.1.3680043.10.999.5");
-        let staged_bytes = fs::read(&staged_path).expect("read staged file");
         let file_obj = OpenFileOptions::new()
             .read_until(tags::PIXEL_DATA)
             .open_file(&staged_path)
@@ -269,8 +215,8 @@ mod tests {
                         conn,
                         &mut stmts,
                         &staged_path,
-                        sha256_hex(&staged_bytes),
-                        staged_bytes.len() as u64,
+                        "ignored-by-store_valid_dicom_file_in_conn".to_string(),
+                        fs::metadata(&staged_path).expect("staged metadata").len(),
                         file_obj,
                         staged_path.display().to_string(),
                         &mut report,
@@ -290,13 +236,13 @@ mod tests {
     }
 
     #[test]
-    fn rollback_removes_zip_bytes_written_to_managed_store() {
+    fn rollback_removes_file_moved_into_managed_store_for_zip_source() {
         let (root, importer) = test_importer(AppConfig::default());
-        let dicom_path = root.path().join("entry.dcm");
-        write_valid_dicom_with_pixel_data(&dicom_path, "1.2.826.0.1.3680043.10.999.6");
-        let raw_bytes = fs::read(&dicom_path).expect("read DICOM bytes");
+        let staged_path = root.path().join("entry.dcm");
+        write_valid_dicom_with_pixel_data(&staged_path, "1.2.826.0.1.3680043.10.999.6");
+        let staged_bytes = fs::read(&staged_path).expect("read staged bytes");
         let file_obj =
-            DefaultFileObject::from_reader(Cursor::new(&raw_bytes[..])).expect("parse DICOM");
+            DefaultFileObject::from_reader(Cursor::new(&staged_bytes[..])).expect("parse DICOM");
 
         importer
             .db
@@ -304,15 +250,17 @@ mod tests {
                 let mut stmts = InstanceImportStatements::prepare(conn)?;
                 let mut report = ImportReport::default();
                 let _managed_cleanup = importer
-                    .store_valid_dicom_bytes_in_conn(
+                    .store_valid_dicom_file_in_conn(
                         conn,
                         &mut stmts,
+                        &staged_path,
+                        "ignored-by-store_valid_dicom_file_in_conn".to_string(),
+                        staged_bytes.len() as u64,
                         file_obj,
-                        raw_bytes,
                         "zip://test.zip!entry.dcm".to_string(),
                         &mut report,
                     )
-                    .expect("store DICOM bytes")
+                    .expect("store DICOM")
                     .expect("accepted DICOM");
 
                 assert_eq!(managed_files(&importer.paths.managed_store_dir).len(), 1);

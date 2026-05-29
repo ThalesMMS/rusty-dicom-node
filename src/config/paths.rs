@@ -61,6 +61,7 @@ pub struct AppPaths {
     pub sqlite_db: PathBuf,
     pub managed_store_dir: PathBuf,
     pub logs_dir: PathBuf,
+    pub active_log_file: PathBuf,
 }
 
 impl AppPaths {
@@ -73,6 +74,7 @@ impl AppPaths {
             sqlite_db: base_dir.join(SQLITE_DB_FILENAME),
             managed_store_dir: base_dir.join("store"),
             logs_dir: base_dir.join("logs"),
+            active_log_file: base_dir.join("logs").join("app.log"),
             base_dir,
         })
     }

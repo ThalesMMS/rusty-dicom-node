@@ -145,6 +145,9 @@ impl TuiApp {
             KeyCode::Char('c') if self.focus == FocusPane::Config => {
                 self.open_config_modal();
             }
+            KeyCode::Char('c') if self.focus == FocusPane::Tasks => {
+                self.cancel_active_task();
+            }
             KeyCode::Enter if self.focus == FocusPane::Local && !self.local_drill_down => {
                 self.enter_local_drill_down()?;
             }

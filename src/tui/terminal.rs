@@ -28,9 +28,8 @@ impl TerminalGuard {
         TERMINAL_RESTORE_NEEDED.store(true, Ordering::SeqCst);
 
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend).map_err(|error| {
+        let terminal = Terminal::new(backend).inspect_err(|_error| {
             restore_terminal_from_stdout();
-            error
         })?;
 
         Ok(Self {
@@ -39,7 +38,7 @@ impl TerminalGuard {
         })
     }
 
-    pub(super) fn draw(&mut self, view: &TuiView) -> anyhow::Result<()> {
+    pub(super) fn draw(&mut self, view: &TuiView<'_>) -> anyhow::Result<()> {
         self.terminal
             .draw(|frame| draw_ui(frame, view, &mut self.list_states))?;
         Ok(())

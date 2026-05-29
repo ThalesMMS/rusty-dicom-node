@@ -41,11 +41,11 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
             } else if view.local_drill_down {
                 let parent_study = view
                     .drill_down_study_uid
-                    .as_deref()
+                    .as_ref()
                     .and_then(|study_uid| {
                         view.local_studies
                             .iter()
-                            .find(|study| study.study_instance_uid == study_uid)
+                            .find(|study| &study.study_instance_uid == study_uid)
                     })
                     .or_else(|| {
                         view.selected_local_study
@@ -73,10 +73,10 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
                     .and_then(|index| view.local_studies.get(index))
                 {
                     Some(study) => {
-                        let series = if view.drill_down_study_uid.as_deref()
+                        let series = if view.drill_down_study_uid
                             == Some(study.study_instance_uid.as_str())
                         {
-                            view.local_series.as_slice()
+                            view.local_series
                         } else {
                             &[]
                         };
@@ -97,7 +97,7 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
         {
             Some(item) => (
                 "Query Result Detail",
-                format_query_result_detail(item, view.query_context_node.as_ref()),
+                format_query_result_detail(item, view.query_context_node),
             ),
             None => (
                 "Query Result Detail",
@@ -114,13 +114,120 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
         ),
     };
 
+    let block = Block::bordered().title_top(pane_title_text(
+        &format!("{title} (PgUp/PgDn when not typing)"),
+        matches!(
+            view.focus,
+            FocusPane::Nodes | FocusPane::Local | FocusPane::Query
+        ),
+    ));
+
+    let content_len = content.lines.len();
+
     frame.render_widget(
         Paragraph::new(content)
-            .block(Block::bordered().title(title))
+            .block(block)
             .wrap(Wrap { trim: false })
             .scroll((view.detail_scroll, 0)),
         area,
     );
+
+    let (has_above, has_below) = detail_scroll_indicators(area, content_len, view.detail_scroll);
+
+    // Scroll overflow indicators: render subtle chevrons inside the border when content overflows.
+    let indicator_style = Style::default().add_modifier(Modifier::DIM);
+
+    if has_above {
+        let top = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: 1,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("▲", indicator_style))),
+            top,
+        );
+    }
+
+    if has_below && area.height > 2 {
+        let bottom = Rect {
+            x: area.x + 1,
+            y: area.y + area.height - 2,
+            width: 1,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("▼", indicator_style))),
+            bottom,
+        );
+    }
+}
+
+fn detail_scroll_indicators(area: Rect, content_len: usize, detail_scroll: u16) -> (bool, bool) {
+    // Ratatui Paragraph scroll is a virtual offset, so we derive overflow from total line count
+    // vs the available viewport height.
+    let viewport_height = area.height.saturating_sub(2) as usize;
+    if viewport_height == 0 {
+        return (false, false);
+    }
+
+    // Ratatui Paragraph scroll is a u16; clamp into the derived max range so indicator logic
+    // matches what the user actually sees.
+    let max_scroll = content_len.saturating_sub(viewport_height) as u16;
+    let scroll = detail_scroll.min(max_scroll);
+
+    let has_above = scroll > 0;
+    let has_below = max_scroll > 0 && scroll < max_scroll;
+
+    (has_above, has_below)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detail_scroll_indicators_are_hidden_when_content_fits() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 6,
+        };
+
+        let (above, below) = detail_scroll_indicators(area, 2, 0);
+        assert!(!above);
+        assert!(!below);
+    }
+
+    #[test]
+    fn detail_scroll_indicators_show_below_at_top_when_overflowing() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 8,
+        };
+
+        let (above, below) = detail_scroll_indicators(area, 50, 0);
+        assert!(!above);
+        assert!(below);
+    }
+
+    #[test]
+    fn detail_scroll_indicators_show_above_when_scrolled_down() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 8,
+        };
+
+        let (above, below) = detail_scroll_indicators(area, 50, 10);
+        assert!(above);
+        assert!(below);
+    }
 }
 
 /// Build a labeled detail view for a remote node suitable for the detail pane.

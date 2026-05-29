@@ -17,13 +17,23 @@ pub const DEFAULT_MAX_ZIP_TOTAL_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ZIP_ENTRY_COUNT: usize = 100_000;
 pub const DEFAULT_MAX_FILE_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_STORE_OBJECT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const BACKFILL_CONFIG_KEYS: [&str; 6] = [
+
+// Import hardening defaults. These are stored as Options in the config to preserve
+// backwards compatibility and allow "unset" to mean "no limit" where applicable.
+pub const DEFAULT_MAX_IMPORT_TOTAL_FILES: usize = 1_000_000;
+pub const DEFAULT_MAX_IMPORT_PATH_LENGTH: usize = 4096;
+pub const DEFAULT_MAX_IMPORT_DIRECTORY_DEPTH: usize = 64;
+
+const BACKFILL_CONFIG_KEYS: [&str; 9] = [
     "preferred_store_transfer_syntax",
     "max_zip_entry_bytes",
     "max_zip_total_bytes",
     "max_zip_entry_count",
     "max_file_import_bytes",
     "max_store_object_bytes",
+    "max_import_total_files",
+    "max_import_path_length",
+    "max_import_directory_depth",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -74,6 +84,21 @@ pub struct AppConfig {
     pub max_pdu_length: u32,
     pub strict_pdu: bool,
     pub allow_promiscuous_storage: bool,
+
+    /// If non-empty, only allow associations from these Calling AE Titles.
+    ///
+    /// Comparison is case-sensitive and performed after trimming trailing spaces
+    /// from the received AE title.
+    #[serde(default)]
+    pub allowed_calling_aet: Vec<String>,
+
+    /// If non-empty, only allow associations from these peer IPs/CIDRs.
+    ///
+    /// Supported formats: exact IP (e.g. `127.0.0.1`, `::1`) or CIDR notation
+    /// (e.g. `10.0.0.0/8`, `2001:db8::/32`). Hostnames are not supported.
+    #[serde(default)]
+    pub allowed_peer_ips: Vec<String>,
+
     #[serde(default)]
     pub preferred_store_transfer_syntax: StoreTransferSyntaxPreference,
     #[serde(default = "default_max_zip_entry_bytes")]
@@ -86,6 +111,25 @@ pub struct AppConfig {
     pub max_file_import_bytes: Option<u64>,
     #[serde(default = "default_max_store_object_bytes")]
     pub max_store_object_bytes: Option<u64>,
+
+    /// Maximum number of filesystem entries to consider during a single import.
+    ///
+    /// This is a safety limit to avoid pathological directory trees. Set to null
+    /// to disable.
+    #[serde(default = "default_max_import_total_files")]
+    pub max_import_total_files: Option<usize>,
+
+    /// Maximum length (in bytes) for paths encountered during import.
+    ///
+    /// Set to null to disable.
+    #[serde(default = "default_max_import_path_length")]
+    pub max_import_path_length: Option<usize>,
+
+    /// Maximum directory depth to traverse during import.
+    ///
+    /// Depth is measured relative to the import root. Set to null to disable.
+    #[serde(default = "default_max_import_directory_depth")]
+    pub max_import_directory_depth: Option<usize>,
 }
 
 impl Default for AppConfig {
@@ -97,12 +141,17 @@ impl Default for AppConfig {
             max_pdu_length: RECOMMENDED_MAX_PDU_LENGTH,
             strict_pdu: true,
             allow_promiscuous_storage: false,
+            allowed_calling_aet: Vec::new(),
+            allowed_peer_ips: Vec::new(),
             preferred_store_transfer_syntax: StoreTransferSyntaxPreference::default(),
             max_zip_entry_bytes: default_max_zip_entry_bytes(),
             max_zip_total_bytes: default_max_zip_total_bytes(),
             max_zip_entry_count: default_max_zip_entry_count(),
             max_file_import_bytes: default_max_file_import_bytes(),
             max_store_object_bytes: default_max_store_object_bytes(),
+            max_import_total_files: default_max_import_total_files(),
+            max_import_path_length: default_max_import_path_length(),
+            max_import_directory_depth: default_max_import_directory_depth(),
         }
     }
 }
@@ -127,7 +176,52 @@ fn default_max_store_object_bytes() -> Option<u64> {
     Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
 }
 
+fn default_max_import_total_files() -> Option<usize> {
+    Some(DEFAULT_MAX_IMPORT_TOTAL_FILES)
+}
+
+fn default_max_import_path_length() -> Option<usize> {
+    Some(DEFAULT_MAX_IMPORT_PATH_LENGTH)
+}
+
+fn default_max_import_directory_depth() -> Option<usize> {
+    Some(DEFAULT_MAX_IMPORT_DIRECTORY_DEPTH)
+}
+
 impl AppConfig {
+    fn validate(&self) -> Result<()> {
+        fn ensure_nonzero_u64(name: &str, value: Option<u64>) -> Result<()> {
+            if let Some(0) = value {
+                anyhow::bail!("invalid config: {name} must be > 0 (or null to disable)");
+            }
+            Ok(())
+        }
+
+        fn ensure_nonzero_usize(name: &str, value: Option<usize>) -> Result<()> {
+            if let Some(0) = value {
+                anyhow::bail!("invalid config: {name} must be > 0 (or null to disable)");
+            }
+            Ok(())
+        }
+
+        // ZIP / file import safety knobs
+        ensure_nonzero_u64("max_zip_entry_bytes", self.max_zip_entry_bytes)?;
+        ensure_nonzero_u64("max_zip_total_bytes", self.max_zip_total_bytes)?;
+        ensure_nonzero_usize("max_zip_entry_count", self.max_zip_entry_count)?;
+        ensure_nonzero_u64("max_file_import_bytes", self.max_file_import_bytes)?;
+        ensure_nonzero_u64("max_store_object_bytes", self.max_store_object_bytes)?;
+
+        // Traversal safety knobs
+        ensure_nonzero_usize("max_import_total_files", self.max_import_total_files)?;
+        ensure_nonzero_usize("max_import_path_length", self.max_import_path_length)?;
+        ensure_nonzero_usize(
+            "max_import_directory_depth",
+            self.max_import_directory_depth,
+        )?;
+
+        Ok(())
+    }
+
     pub fn load_or_create(paths: &AppPaths) -> Result<Self> {
         if paths.config_json.exists() {
             let text = fs::read_to_string(&paths.config_json)
@@ -143,12 +237,17 @@ impl AppConfig {
                 cfg.max_pdu_length = RECOMMENDED_MAX_PDU_LENGTH;
                 should_save = true;
             }
+
+            cfg.validate()
+                .with_context(|| format!("validating config at {}", paths.config_json.display()))?;
+
             if should_save {
                 cfg.save(paths)?;
             }
             Ok(cfg)
         } else {
             let cfg = Self::default();
+            cfg.validate()?;
             cfg.save(paths)?;
             Ok(cfg)
         }
@@ -190,6 +289,7 @@ mod tests {
             sqlite_db: base_dir.join("app.sqlite3"),
             managed_store_dir: base_dir.join("store"),
             logs_dir: base_dir.join("logs"),
+            active_log_file: base_dir.join("logs").join("app.log"),
         }
     }
 
@@ -411,5 +511,34 @@ mod tests {
         assert!(saved.contains("\"max_zip_entry_count\": null"));
         assert!(saved.contains("\"max_file_import_bytes\": null"));
         assert!(saved.contains("\"max_store_object_bytes\": null"));
+    }
+
+    #[test]
+    fn load_or_create_rejects_zero_limits() {
+        let root = tempdir().expect("create temp dir");
+        let paths = temp_paths(&root);
+        paths.ensure().expect("create temp paths");
+        fs::write(
+            &paths.config_json,
+            concat!(
+                "{\n",
+                "  \"local_ae_title\": \"DICOMNODECLIENT\",\n",
+                "  \"storage_bind_addr\": \"0.0.0.0\",\n",
+                "  \"storage_scp_port\": 11112,\n",
+                "  \"max_pdu_length\": 262138,\n",
+                "  \"strict_pdu\": true,\n",
+                "  \"allow_promiscuous_storage\": false,\n",
+                "  \"preferred_store_transfer_syntax\": \"jpeg2000_lossless\",\n",
+                "  \"max_zip_entry_bytes\": 0\n",
+                "}\n"
+            ),
+        )
+        .expect("write config with invalid zero limit");
+
+        let err = AppConfig::load_or_create(&paths).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("validating config"));
+        assert!(msg.contains("max_zip_entry_bytes"));
+        assert!(msg.contains("must be > 0"));
     }
 }

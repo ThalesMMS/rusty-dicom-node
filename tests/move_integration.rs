@@ -9,7 +9,11 @@ use common::{create_test_study, harness::MoveScp, run_with_timeout, TestServices
 #[test]
 fn c_move_retrieves_instances_into_local_storage_scp_and_database() {
     run_with_timeout(Duration::from_secs(15), || {
-        let services = TestServices::new().expect("create test services");
+        let services = TestServices::new_with_config(|config| {
+            config.allowed_calling_aet = vec![];
+            config.allowed_peer_ips = vec![];
+        })
+        .expect("create test services");
         let study = create_test_study(
             &services.temp_dir.path().join("move-source"),
             "1.2.826.0.1.3680043.10.202.1",
@@ -37,6 +41,7 @@ fn c_move_retrieves_instances_into_local_storage_scp_and_database() {
                 services.services.config.local_ae_title.clone(),
                 storage_scp_port,
             )
+            .response_command_fragments(vec![3, 2])
             .spawn()
             .expect("spawn move scp");
         let node = move_scp.remote_node("move-scp");

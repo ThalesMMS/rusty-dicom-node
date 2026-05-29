@@ -46,6 +46,171 @@ fn draw_ui_does_not_render_help_over_active_modal() {
 }
 
 #[test]
+fn modal_inline_errors_hidden_until_touched_node_form() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    let mut form = NodeFormState::add();
+    // invalid required field, but untouched
+    form.ae_title.clear();
+    form.host.clear();
+    form.port.clear();
+
+    app.modal = Some(ModalState::AddNode(form));
+    let view = app.view();
+
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    // Ensure we don't show inline 'required' errors before touch.
+    assert!(rendered.contains("Add Remote Node"));
+    // The word 'required' also appears in hint text (e.g. "up to 16 chars ... required"),
+    // so assert on the error phrasing used by inline validation.
+    assert!(!rendered.contains(" is required"));
+    assert!(!rendered.contains("UID must be"));
+    assert!(!rendered.contains("invalid port"));
+}
+
+#[test]
+fn modal_inline_errors_visible_after_touch_node_form() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    let mut form = NodeFormState::add();
+    form.ae_title.clear();
+    form.host.clear();
+    form.port.clear();
+    form.touched.insert(NodeField::AeTitle);
+    form.touched.insert(NodeField::Host);
+    form.touched.insert(NodeField::Port);
+
+    app.modal = Some(ModalState::AddNode(form));
+    let view = app.view();
+
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("required"));
+}
+
+#[test]
+fn modal_inline_errors_clear_when_valid_node_form() {
+    let services = test_services();
+    let mut app = TuiApp::new(services.services.clone());
+    let mut form = NodeFormState::add();
+    form.ae_title = "ORTHANC".to_string();
+    form.host = "127.0.0.1".to_string();
+    form.port = "104".to_string();
+    form.touched.insert(NodeField::AeTitle);
+    form.touched.insert(NodeField::Host);
+    form.touched.insert(NodeField::Port);
+
+    app.modal = Some(ModalState::AddNode(form));
+    let view = app.view();
+
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(!rendered.contains(" is required"));
+    assert!(!rendered.contains("UID must be"));
+    assert!(!rendered.contains("invalid port"));
+}
+
+#[test]
+fn modal_inline_validation_query_uid_shows_only_after_touch() {
+    let services = test_services();
+    add_test_node(&services, "pacs", "PACSAE");
+    let node = services.get_node("pacs").unwrap();
+    let mut app = TuiApp::new(services.services.clone());
+
+    let mut form = QueryFormState::new(node);
+    form.level = QueryLevel::Study;
+    form.study_uid = "1.2.".to_string(); // invalid UID
+
+    // untouched should not show inline uid error
+    app.modal = Some(ModalState::Query(form.clone()));
+    let view = app.view();
+
+    let backend = ratatui::backend::TestBackend::new(90, 28);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("Query Remote"));
+    assert!(!rendered.contains("UID must be"));
+
+    // touched should show inline uid error
+    let mut touched_form = form;
+    touched_form.touched.insert(QueryField::StudyUid);
+    // Ensure the UID field is active as well; we show errors when touched and invalid,
+    // but some help text is tied to the active field.
+    touched_form.active = QueryField::StudyUid;
+    app.modal = Some(ModalState::Query(touched_form));
+    let view = app.view();
+
+    let backend = ratatui::backend::TestBackend::new(90, 28);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("UID is invalid"));
+}
+
+#[test]
 fn formatting_helpers_compact_rows_and_status_lines() {
     assert_eq!(truncate_uid("1234567890", 6), "…67890");
     assert_eq!(pad_or_truncate("CT", 4), "CT  ");
@@ -398,7 +563,7 @@ fn footer_status_text_shows_retrieve_hint_in_query_pane() {
 #[test]
 fn footer_status_text_shows_run_command_hint_in_input_pane() {
     let services = test_services();
-    let app = TuiApp::new(services.services.clone());
+    let mut app = TuiApp::new(services.services.clone());
     // default focus is Input
 
     let view = app.view();

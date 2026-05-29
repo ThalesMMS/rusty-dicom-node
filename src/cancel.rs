@@ -32,7 +32,7 @@ pub fn ensure_not_cancelled(cancel_flag: Option<&AtomicBool>) -> Result<()> {
 }
 
 pub fn io_error() -> io::Error {
-    io::Error::new(io::ErrorKind::Other, OperationCancelled)
+    io::Error::other(OperationCancelled)
 }
 
 pub fn is_cancelled_error(error: &anyhow::Error) -> bool {
