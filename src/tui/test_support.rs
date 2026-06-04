@@ -193,6 +193,7 @@ pub(super) fn add_test_local_instance(app: &AppServices, meta: TestInstanceMeta<
             sha256: format!("sha256-{}", meta.sop_uid),
             source_path: source_path.display().to_string(),
             managed_path: managed_path.display().to_string(),
+            attributes_json: None,
             imported_at: "2026-04-16T00:00:00Z".to_string(),
         })
         .unwrap();

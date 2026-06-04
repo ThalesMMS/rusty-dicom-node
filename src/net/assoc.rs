@@ -808,6 +808,33 @@ pub fn create_find_request_command(sop_class_uid: &str, message_id: u16) -> Defa
     ])
 }
 
+pub fn create_find_response(
+    message_id_being_responded_to: u16,
+    sop_class_uid: &str,
+    status: u16,
+    has_dataset: bool,
+) -> DefaultMemObject {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from(sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8020])),
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id_being_responded_to]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [if has_dataset { 0x0000 } else { 0x0101 }]),
+        ),
+        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [status])),
+    ])
+}
+
 pub fn create_move_request_command(
     sop_class_uid: &str,
     message_id: u16,
@@ -831,6 +858,124 @@ pub fn create_move_request_command(
             tags::COMMAND_DATA_SET_TYPE,
             VR::US,
             dicom_value!(U16, [0x0001]),
+        ),
+    ])
+}
+
+pub fn create_move_response(
+    message_id_being_responded_to: u16,
+    sop_class_uid: &str,
+    status: u16,
+    remaining: u32,
+    completed: u32,
+    failed: u32,
+    warning: u32,
+) -> DefaultMemObject {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from(sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8021])),
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id_being_responded_to]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [0x0101]),
+        ),
+        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [status])),
+        DataElement::new(
+            tags::NUMBER_OF_REMAINING_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [remaining.min(u16::MAX as u32) as u16]),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_COMPLETED_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [completed.min(u16::MAX as u32) as u16]),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_FAILED_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [failed.min(u16::MAX as u32) as u16]),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_WARNING_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [warning.min(u16::MAX as u32) as u16]),
+        ),
+    ])
+}
+
+pub fn create_get_request_command(sop_class_uid: &str, message_id: u16) -> DefaultMemObject {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from(sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x0010])),
+        DataElement::new(tags::MESSAGE_ID, VR::US, dicom_value!(U16, [message_id])),
+        DataElement::new(tags::PRIORITY, VR::US, dicom_value!(U16, [0x0000])),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [0x0001]),
+        ),
+    ])
+}
+
+pub fn create_get_response(
+    message_id_being_responded_to: u16,
+    sop_class_uid: &str,
+    status: u16,
+    remaining: u32,
+    completed: u32,
+    failed: u32,
+    warning: u32,
+) -> DefaultMemObject {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from(sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8010])),
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id_being_responded_to]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [0x0101]),
+        ),
+        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [status])),
+        DataElement::new(
+            tags::NUMBER_OF_REMAINING_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [remaining.min(u16::MAX as u32) as u16]),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_COMPLETED_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [completed.min(u16::MAX as u32) as u16]),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_FAILED_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [failed.min(u16::MAX as u32) as u16]),
+        ),
+        DataElement::new(
+            tags::NUMBER_OF_WARNING_SUBOPERATIONS,
+            VR::US,
+            dicom_value!(U16, [warning.min(u16::MAX as u32) as u16]),
         ),
     ])
 }

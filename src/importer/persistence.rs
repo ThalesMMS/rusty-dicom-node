@@ -1,18 +1,18 @@
-use std::{fs, path::Path};
-
-use anyhow::Context;
-use dicom_dictionary_std::tags;
+use std::path::Path;
 
 use crate::{
+    archive::{
+        ArchiveIngestError, ArchiveIngestRequest, ArchiveIngestService, ArchiveIngestStatus,
+    },
     config::now_utc_string,
-    db::{Database, InstanceImportStatements},
-    dicom::{extract_local_instance, managed_file_path, DefaultFileObject},
+    db::InstanceImportStatements,
+    dicom::DefaultFileObject,
     models::ImportReport,
 };
 
 use rusqlite::Connection;
 
-use super::{staging::replace_file, staging::FileCleanupGuard, Importer};
+use super::{staging::FileCleanupGuard, Importer};
 
 pub(super) type StoreDicomResult<T> = std::result::Result<T, StoreDicomError>;
 
@@ -67,66 +67,47 @@ impl Importer {
         report: &mut ImportReport,
     ) -> StoreDicomResult<Option<FileCleanupGuard>> {
         debug_assert!(!conn.is_autocommit());
-        let staged_cleanup = FileCleanupGuard::new(staged_path);
-        let study_instance_uid = crate::dicom::required_str(&file_obj, tags::STUDY_INSTANCE_UID)
-            .map_err(StoreDicomError::InvalidDicom)?;
-        let series_instance_uid = crate::dicom::required_str(&file_obj, tags::SERIES_INSTANCE_UID)
-            .map_err(StoreDicomError::InvalidDicom)?;
-        let sop_instance_uid = file_obj.meta().media_storage_sop_instance_uid().to_string();
+        let service = ArchiveIngestService::new(self.paths.clone());
+        let (result, managed_cleanup) = service
+            .ingest_staged_part10_in_conn(
+                conn,
+                stmts,
+                ArchiveIngestRequest {
+                    staged_path: staged_path.to_path_buf(),
+                    sha256,
+                    file_size_bytes,
+                    file_obj,
+                    source_path,
+                    imported_at: Some(now_utc_string()),
+                },
+            )
+            .map_err(|err| match err {
+                ArchiveIngestError::InvalidDicom(err) => StoreDicomError::InvalidDicom(err),
+                ArchiveIngestError::Fatal(err) => StoreDicomError::Fatal(err),
+            })?;
 
-        let managed_path = managed_file_path(
-            &self.paths.managed_store_dir,
-            &study_instance_uid,
-            &series_instance_uid,
-            &sop_instance_uid,
-        );
-
-        if let Some(parent) = managed_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))
-                .map_err(StoreDicomError::Fatal)?;
-        }
-
-        if let Some(duplicate_reason) =
-            Database::instance_duplicate_reason_with_statements(stmts, &sop_instance_uid, &sha256)
-                .map_err(StoreDicomError::Fatal)?
-        {
-            match duplicate_reason {
-                crate::models::DuplicateReason::SopInstanceUid => {
-                    report.duplicate_by_sop_instance_uid += 1;
-                }
-                crate::models::DuplicateReason::Sha256 => {
-                    report.duplicate_by_sha256 += 1;
-                }
-                crate::models::DuplicateReason::SopInstanceUidAndSha256 => {
-                    report.duplicate_by_sop_instance_uid += 1;
-                    report.duplicate_by_sha256 += 1;
-                }
+        match result.status {
+            ArchiveIngestStatus::Created => {
+                report.accepted += 1;
+                report.stored_bytes += result.bytes_stored;
             }
-            report.duplicates += 1;
-            return Ok(None);
+            ArchiveIngestStatus::Duplicate { reason } => {
+                match reason {
+                    crate::models::DuplicateReason::SopInstanceUid => {
+                        report.duplicate_by_sop_instance_uid += 1;
+                    }
+                    crate::models::DuplicateReason::Sha256 => {
+                        report.duplicate_by_sha256 += 1;
+                    }
+                    crate::models::DuplicateReason::SopInstanceUidAndSha256 => {
+                        report.duplicate_by_sop_instance_uid += 1;
+                        report.duplicate_by_sha256 += 1;
+                    }
+                }
+                report.duplicates += 1;
+            }
         }
-
-        replace_file(staged_cleanup.path(), &managed_path).map_err(StoreDicomError::Fatal)?;
-        staged_cleanup.disarm();
-        let managed_cleanup = FileCleanupGuard::new(&managed_path);
-
-        let imported_at = now_utc_string();
-        let instance = extract_local_instance(
-            &file_obj,
-            source_path,
-            &managed_path,
-            sha256,
-            file_size_bytes,
-            Some(imported_at),
-        )
-        .map_err(StoreDicomError::InvalidDicom)?;
-
-        Database::upsert_instance_with_statements(stmts, &instance)
-            .map_err(StoreDicomError::Fatal)?;
-        report.accepted += 1;
-        report.stored_bytes += file_size_bytes;
-        Ok(Some(managed_cleanup))
+        Ok(managed_cleanup)
     }
 }
 

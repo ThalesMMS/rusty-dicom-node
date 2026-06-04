@@ -47,10 +47,55 @@ impl<'conn> InstanceImportStatements<'conn> {
                 sha256,
                 source_path,
                 managed_path,
-                imported_at
+                attributes_json,
+                imported_at,
+                series_number_sort_class,
+                series_number_sort_int,
+                series_number_sort_text,
+                instance_number_sort_class,
+                instance_number_sort_int,
+                instance_number_sort_text
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                CASE
+                    WHEN ?12 IS NULL THEN 2
+                    WHEN TRIM(?12) <> '' AND (TRIM(?12) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(?12) GLOB '-*') OR (TRIM(?12) GLOB '+*'))
+                            AND substr(TRIM(?12), 2) <> ''
+                            AND substr(TRIM(?12), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                CASE
+                    WHEN ?12 IS NOT NULL
+                        AND TRIM(?12) <> ''
+                        AND (TRIM(?12) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(?12) GLOB '-*') OR (TRIM(?12) GLOB '+*'))
+                                AND substr(TRIM(?12), 2) <> ''
+                                AND substr(TRIM(?12), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(?12) AS INTEGER)
+                END,
+                ?12,
+                CASE
+                    WHEN ?14 IS NULL THEN 2
+                    WHEN TRIM(?14) <> '' AND (TRIM(?14) NOT GLOB '*[^0-9]*'
+                        OR (((TRIM(?14) GLOB '-*') OR (TRIM(?14) GLOB '+*'))
+                            AND substr(TRIM(?14), 2) <> ''
+                            AND substr(TRIM(?14), 2) NOT GLOB '*[^0-9]*'))
+                        THEN 0
+                    ELSE 1
+                END,
+                CASE
+                    WHEN ?14 IS NOT NULL
+                        AND TRIM(?14) <> ''
+                        AND (TRIM(?14) NOT GLOB '*[^0-9]*'
+                            OR (((TRIM(?14) GLOB '-*') OR (TRIM(?14) GLOB '+*'))
+                                AND substr(TRIM(?14), 2) <> ''
+                                AND substr(TRIM(?14), 2) NOT GLOB '*[^0-9]*'))
+                        THEN CAST(TRIM(?14) AS INTEGER)
+                END,
+                ?14
             )
             ON CONFLICT(sop_instance_uid) DO UPDATE SET
                 study_instance_uid = excluded.study_instance_uid,
@@ -70,6 +115,7 @@ impl<'conn> InstanceImportStatements<'conn> {
                 sha256 = excluded.sha256,
                 source_path = excluded.source_path,
                 managed_path = excluded.managed_path,
+                attributes_json = excluded.attributes_json,
                 imported_at = excluded.imported_at,
                 series_number_sort_class = CASE
                     WHEN excluded.series_number IS NULL THEN 2
@@ -200,11 +246,13 @@ impl<'conn> InstanceImportStatements<'conn> {
             instance.sha256,
             instance.source_path,
             instance.managed_path,
+            instance.attributes_json,
             instance.imported_at,
         ])?;
 
         self.refresh_study_summary
             .execute(params![instance.study_instance_uid])?;
+        upsert_normalized_archive_records(self.conn, instance)?;
         Ok(())
     }
 }
@@ -236,7 +284,126 @@ pub fn update_managed_paths(
             params![old_base_dir, new_base_dir, old_base_like],
         )
         .with_context(|| format!("updating managed paths in {}", db_path.display()))?;
+    let _ = conn.execute(
+        r#"
+        UPDATE instances
+        SET managed_path = replace(managed_path, ?1, ?2),
+            object_key = replace(object_key, ?1, ?2)
+        WHERE managed_path LIKE ?3
+        "#,
+        params![old_base_dir, new_base_dir, old_base_like],
+    );
     Ok(updated)
+}
+
+fn upsert_normalized_archive_records(conn: &Connection, instance: &LocalInstance) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO studies (
+            study_instance_uid,
+            patient_id,
+            patient_name,
+            accession_number,
+            study_id,
+            study_date,
+            study_description,
+            created_at,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?7)
+        ON CONFLICT(study_instance_uid) DO UPDATE SET
+            patient_id = excluded.patient_id,
+            patient_name = excluded.patient_name,
+            accession_number = excluded.accession_number,
+            study_date = excluded.study_date,
+            study_description = excluded.study_description,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            instance.study_instance_uid,
+            instance.patient_id,
+            instance.patient_name,
+            instance.accession_number,
+            instance.study_date,
+            instance.study_description,
+            instance.imported_at,
+        ],
+    )?;
+
+    conn.execute(
+        r#"
+        INSERT INTO series (
+            series_instance_uid,
+            study_instance_uid,
+            modality,
+            series_number,
+            series_description,
+            created_at,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+        ON CONFLICT(series_instance_uid) DO UPDATE SET
+            study_instance_uid = excluded.study_instance_uid,
+            modality = excluded.modality,
+            series_number = excluded.series_number,
+            series_description = excluded.series_description,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            instance.series_instance_uid,
+            instance.study_instance_uid,
+            instance.modality,
+            instance.series_number,
+            instance.series_description,
+            instance.imported_at,
+        ],
+    )?;
+
+    conn.execute(
+        r#"
+        INSERT INTO instances (
+            sop_instance_uid,
+            study_instance_uid,
+            series_instance_uid,
+            sop_class_uid,
+            instance_number,
+            transfer_syntax_uid,
+            acquisition_date_time,
+            object_key,
+            managed_path,
+            object_size_bytes,
+            sha256,
+            attributes_json,
+            created_at,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?7, ?8, ?9, ?10, ?11, ?11)
+        ON CONFLICT(sop_instance_uid) DO UPDATE SET
+            study_instance_uid = excluded.study_instance_uid,
+            series_instance_uid = excluded.series_instance_uid,
+            sop_class_uid = excluded.sop_class_uid,
+            instance_number = excluded.instance_number,
+            transfer_syntax_uid = excluded.transfer_syntax_uid,
+            object_key = excluded.object_key,
+            managed_path = excluded.managed_path,
+            object_size_bytes = excluded.object_size_bytes,
+            sha256 = excluded.sha256,
+            attributes_json = excluded.attributes_json,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            instance.sop_instance_uid,
+            instance.study_instance_uid,
+            instance.series_instance_uid,
+            instance.sop_class_uid,
+            instance.instance_number,
+            instance.transfer_syntax_uid,
+            instance.managed_path,
+            instance.file_size_bytes as i64,
+            instance.sha256,
+            instance.attributes_json,
+            instance.imported_at,
+        ],
+    )?;
+
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +427,11 @@ impl Database {
         Ok(conn)
     }
 
+    pub(crate) fn with_connection<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let conn = self.connection()?;
+        f(&conn)
+    }
+
     fn init_connection_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             r#"
@@ -280,6 +452,34 @@ impl Database {
 
     pub fn init(&self) -> Result<()> {
         let conn = self.connection()?;
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN attributes_json TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN series_number_sort_class INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN series_number_sort_int INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN series_number_sort_text TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN instance_number_sort_class INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN instance_number_sort_int INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE local_instances ADD COLUMN instance_number_sort_text TEXT",
+            [],
+        );
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -318,6 +518,7 @@ impl Database {
                 sha256 TEXT NOT NULL,
                 source_path TEXT NOT NULL,
                 managed_path TEXT NOT NULL,
+                attributes_json TEXT,
                 imported_at TEXT NOT NULL,
                 series_number_sort_class INTEGER,
                 series_number_sort_int INTEGER,
@@ -360,6 +561,60 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_local_studies_ordering
                 ON local_studies(study_date_max DESC, study_instance_uid);
 
+            CREATE TABLE IF NOT EXISTS studies (
+                study_instance_uid TEXT PRIMARY KEY,
+                patient_id TEXT,
+                patient_name TEXT,
+                accession_number TEXT,
+                study_id TEXT,
+                study_date TEXT,
+                study_description TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS series (
+                series_instance_uid TEXT PRIMARY KEY,
+                study_instance_uid TEXT NOT NULL,
+                modality TEXT,
+                series_number TEXT,
+                series_description TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(study_instance_uid) REFERENCES studies(study_instance_uid)
+            );
+
+            CREATE TABLE IF NOT EXISTS instances (
+                sop_instance_uid TEXT PRIMARY KEY,
+                study_instance_uid TEXT NOT NULL,
+                series_instance_uid TEXT NOT NULL,
+                sop_class_uid TEXT NOT NULL,
+                instance_number TEXT,
+                transfer_syntax_uid TEXT,
+                acquisition_date_time TEXT,
+                object_key TEXT,
+                managed_path TEXT NOT NULL,
+                object_size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                attributes_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(study_instance_uid) REFERENCES studies(study_instance_uid),
+                FOREIGN KEY(series_instance_uid) REFERENCES series(series_instance_uid)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_series_study_uid
+                ON series(study_instance_uid);
+
+            CREATE INDEX IF NOT EXISTS idx_archive_instances_study_uid
+                ON instances(study_instance_uid);
+
+            CREATE INDEX IF NOT EXISTS idx_archive_instances_series_uid
+                ON instances(series_instance_uid);
+
+            CREATE INDEX IF NOT EXISTS idx_archive_instances_sha256
+                ON instances(sha256);
+
             -- Backfill local_studies from local_instances (safe and idempotent).
             INSERT OR REPLACE INTO local_studies (
                 study_instance_uid,
@@ -382,6 +637,83 @@ impl Database {
                 COUNT(*) AS instance_count
             FROM local_instances
             GROUP BY study_instance_uid;
+
+            INSERT OR REPLACE INTO studies (
+                study_instance_uid,
+                patient_id,
+                patient_name,
+                accession_number,
+                study_id,
+                study_date,
+                study_description,
+                created_at,
+                updated_at
+            )
+            SELECT
+                study_instance_uid,
+                MAX(patient_id) AS patient_id,
+                MAX(patient_name) AS patient_name,
+                MAX(accession_number) AS accession_number,
+                NULL AS study_id,
+                MAX(study_date) AS study_date,
+                MAX(study_description) AS study_description,
+                MIN(imported_at) AS created_at,
+                MAX(imported_at) AS updated_at
+            FROM local_instances
+            GROUP BY study_instance_uid;
+
+            INSERT OR REPLACE INTO series (
+                series_instance_uid,
+                study_instance_uid,
+                modality,
+                series_number,
+                series_description,
+                created_at,
+                updated_at
+            )
+            SELECT
+                series_instance_uid,
+                MAX(study_instance_uid) AS study_instance_uid,
+                MAX(modality) AS modality,
+                MAX(series_number) AS series_number,
+                MAX(series_description) AS series_description,
+                MIN(imported_at) AS created_at,
+                MAX(imported_at) AS updated_at
+            FROM local_instances
+            GROUP BY series_instance_uid;
+
+            INSERT OR REPLACE INTO instances (
+                sop_instance_uid,
+                study_instance_uid,
+                series_instance_uid,
+                sop_class_uid,
+                instance_number,
+                transfer_syntax_uid,
+                acquisition_date_time,
+                object_key,
+                managed_path,
+                object_size_bytes,
+                sha256,
+                attributes_json,
+                created_at,
+                updated_at
+            )
+            SELECT
+                sop_instance_uid,
+                study_instance_uid,
+                series_instance_uid,
+                sop_class_uid,
+                instance_number,
+                transfer_syntax_uid,
+                NULL AS acquisition_date_time,
+                managed_path AS object_key,
+                managed_path,
+                file_size_bytes AS object_size_bytes,
+                sha256,
+                attributes_json,
+                imported_at AS created_at,
+                imported_at AS updated_at
+            FROM local_instances;
 
             -- Backfill sort keys for existing rows (safe and idempotent).
             UPDATE local_instances
@@ -613,6 +945,7 @@ impl Database {
                 sha256,
                 source_path,
                 managed_path,
+                attributes_json,
                 imported_at,
                 series_number_sort_class,
                 series_number_sort_int,
@@ -622,7 +955,7 @@ impl Database {
                 instance_number_sort_text
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                 CASE
                     WHEN ?12 IS NULL THEN 2
                     WHEN TRIM(?12) <> '' AND (TRIM(?12) NOT GLOB '*[^0-9]*'
@@ -680,6 +1013,7 @@ impl Database {
                 sha256 = excluded.sha256,
                 source_path = excluded.source_path,
                 managed_path = excluded.managed_path,
+                attributes_json = excluded.attributes_json,
                 imported_at = excluded.imported_at,
                 series_number_sort_class = excluded.series_number_sort_class,
                 series_number_sort_int = excluded.series_number_sort_int,
@@ -707,6 +1041,7 @@ impl Database {
                 instance.sha256,
                 instance.source_path,
                 instance.managed_path,
+                instance.attributes_json,
                 instance.imported_at,
             ],
         )?;
@@ -738,6 +1073,8 @@ impl Database {
             "#,
             params![instance.study_instance_uid],
         )?;
+
+        upsert_normalized_archive_records(&conn, instance)?;
 
         Ok(())
     }
@@ -894,6 +1231,7 @@ impl Database {
                 sha256,
                 source_path,
                 managed_path,
+                attributes_json,
                 imported_at
             FROM local_instances
             WHERE series_instance_uid = ?1
@@ -925,7 +1263,8 @@ impl Database {
                 sha256: row.get(15)?,
                 source_path: row.get(16)?,
                 managed_path: row.get(17)?,
-                imported_at: row.get(18)?,
+                attributes_json: row.get(18)?,
+                imported_at: row.get(19)?,
             })
         })?;
 
@@ -1044,6 +1383,7 @@ mod tests {
             sha256: "sha256".to_string(),
             source_path: "/source/file.dcm".to_string(),
             managed_path: managed_path.to_string_lossy().to_string(),
+            attributes_json: None,
             imported_at: "2026-04-14T00:00:00Z".to_string(),
         }
     }
@@ -1668,6 +2008,155 @@ mod tests {
             ordered_numbers,
             vec![Some("2"), Some("10"), Some(""), Some("zeta"), None]
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn init_backfills_normalized_archive_tables_from_legacy_local_instances() {
+        let root = unique_temp_dir("rusty-dicom-node-db-test");
+        let db_path = root.join("rusty-dicom-node.sqlite3");
+        fs::create_dir_all(&root).expect("create temp dir");
+
+        let legacy_conn = Connection::open(&db_path).expect("open legacy db");
+        legacy_conn
+            .execute_batch(
+                r#"
+                CREATE TABLE local_instances (
+                    sop_instance_uid TEXT PRIMARY KEY,
+                    study_instance_uid TEXT NOT NULL,
+                    series_instance_uid TEXT NOT NULL,
+                    sop_class_uid TEXT NOT NULL,
+                    transfer_syntax_uid TEXT,
+                    patient_id TEXT,
+                    patient_name TEXT,
+                    accession_number TEXT,
+                    study_date TEXT,
+                    study_description TEXT,
+                    series_description TEXT,
+                    series_number TEXT,
+                    modality TEXT,
+                    instance_number TEXT,
+                    file_size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    managed_path TEXT NOT NULL,
+                    imported_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .expect("create legacy local_instances table");
+        for (series_uid, series_number, sop_uid, instance_number) in [
+            ("series-2", "2", "instance-2", "1"),
+            ("series-1", "1", "instance-1", "1"),
+        ] {
+            legacy_conn
+                .execute(
+                    r#"
+                    INSERT INTO local_instances (
+                        sop_instance_uid,
+                        study_instance_uid,
+                        series_instance_uid,
+                        sop_class_uid,
+                        transfer_syntax_uid,
+                        patient_id,
+                        patient_name,
+                        accession_number,
+                        study_date,
+                        study_description,
+                        series_description,
+                        series_number,
+                        modality,
+                        instance_number,
+                        file_size_bytes,
+                        sha256,
+                        source_path,
+                        managed_path,
+                        imported_at
+                    ) VALUES (
+                        ?1, 'study-1', ?2, '1.2.840.10008.5.1.4.1.1.2',
+                        '1.2.840.10008.1.2.1', 'patient-1', 'Patient^One',
+                        'accession-1', '20260604', 'Study one', 'Series',
+                        ?3, 'CT', ?4, 42, ?5, '/source/file.dcm', ?6,
+                        '2026-06-04T00:00:00Z'
+                    )
+                    "#,
+                    params![
+                        sop_uid,
+                        series_uid,
+                        series_number,
+                        instance_number,
+                        format!("sha256-{sop_uid}"),
+                        root.join(format!("{sop_uid}.dcm")).display().to_string()
+                    ],
+                )
+                .expect("insert legacy instance");
+        }
+        drop(legacy_conn);
+
+        let db = Database::open(&db_path).expect("open db through current init");
+        let conn = db.connection().expect("open current connection");
+
+        let study_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM studies WHERE study_instance_uid = 'study-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count normalized studies");
+        let series_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM series WHERE study_instance_uid = 'study-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count normalized series");
+        let instance_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM instances WHERE study_instance_uid = 'study-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count normalized instances");
+
+        assert_eq!(study_count, 1);
+        assert_eq!(series_count, 2);
+        assert_eq!(instance_count, 2);
+
+        let files = db.study_files("study-1").expect("read study files");
+        assert_eq!(
+            files,
+            vec![root.join("instance-1.dcm"), root.join("instance-2.dcm")]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upsert_instance_persists_attributes_json_in_normalized_instance() {
+        let root = unique_temp_dir("rusty-dicom-node-db-test");
+        let db_path = root.join("rusty-dicom-node.sqlite3");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let db = Database::open(&db_path).expect("open temp db");
+
+        let managed_path = root.join("instance.dcm");
+        let mut instance = sample_instance(&managed_path);
+        instance.attributes_json = Some(r#"{"Manufacturer":"ACME Scanner"}"#.to_string());
+        db.upsert_instance(&instance)
+            .expect("insert instance with attributes json");
+
+        let conn = db.connection().expect("open connection");
+        let attributes_json: String = conn
+            .query_row(
+                "SELECT attributes_json FROM instances WHERE sop_instance_uid = 'instance'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read attributes json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&attributes_json).expect("attributes json should be valid json");
+
+        assert_eq!(parsed["Manufacturer"], "ACME Scanner");
 
         let _ = fs::remove_dir_all(root);
     }

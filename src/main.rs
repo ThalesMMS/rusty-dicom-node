@@ -779,6 +779,85 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         },
+        Commands::Serve { json, metrics_json } => {
+            use dicom_node_client::summary::{
+                OperationCounts, OperationKind, OperationStatus, OperationSummary,
+            };
+            use dicom_node_client::summary_render::render_human;
+            use std::time::Instant;
+
+            let started = Instant::now();
+            if services.config.local_aes.is_empty() {
+                println!("Starting DICOM server with no configured local AEs");
+            } else {
+                let listeners = services
+                    .config
+                    .local_aes
+                    .iter()
+                    .map(|ae| format!("{}@{}", ae.title, ae.bind_addr))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "Starting DICOM server with {} local AE(s): {}",
+                    services.config.local_aes.len(),
+                    listeners
+                );
+            }
+
+            let report_result = services.run_server_runtime(Arc::clone(&cancel_flag));
+            let duration = started.elapsed();
+
+            let (status, report, err) = match report_result {
+                Ok(report) => (OperationStatus::Success, Some(report), None),
+                Err(err) => (OperationStatus::Failure, None, Some(err)),
+            };
+
+            let mut summary = OperationSummary::new(
+                OperationKind::StorageScp,
+                duration.as_millis() as u64,
+                status,
+            );
+            summary.logs.push(dicom_node_client::summary::LogReference {
+                path: log_path.display().to_string(),
+                correlation_id: None,
+                line_range: None,
+            });
+
+            if let Some(report) = report {
+                summary.counts = OperationCounts {
+                    received: Some(report.received as u64),
+                    stored: Some(report.stored as u64),
+                    failed: Some(report.failed as u64),
+                    ..Default::default()
+                };
+            }
+
+            if let Some(err) = err.as_ref() {
+                summary
+                    .failures
+                    .push(dicom_node_client::summary::FailureDetail {
+                        message: format!("serve exited with error: {err:#}"),
+                        code: Some("serve_error".to_string()),
+                    });
+            }
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            } else {
+                println!("{}", render_human(&summary));
+            }
+
+            if metrics_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&services.server_metrics_snapshot())?
+                );
+            }
+
+            if let Some(err) = err {
+                return Err(err);
+            }
+        }
         Commands::StorageScp { json } => {
             use dicom_node_client::summary::{
                 DicomAETitles, NetworkPeer, OperationCounts, OperationKind, OperationStatus,

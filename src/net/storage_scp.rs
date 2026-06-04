@@ -1,9 +1,9 @@
 use std::{
     fs,
-    io::{self, BufWriter, Seek, SeekFrom, Write},
+    io::{BufWriter, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -11,29 +11,36 @@ use std::{
 
 use anyhow::{anyhow, Context};
 use dicom_dictionary_std::tags;
-use dicom_object::{FileMetaTableBuilder, OpenFileOptions};
-use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_ul::{
     association::{Association, ServerAssociationOptions},
-    pdu::{PDataValue, PDataValueType},
+    pdu::PDataValueType,
     Pdu,
 };
-use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
 
 use ipnet::IpNet;
 
 use crate::{
-    config::{now_utc_string, AppConfig, AppPaths},
+    archive::SqliteArchiveCatalog,
+    config::{
+        now_utc_string, AppConfig, AppPaths, LocalAeConfig, LocalAeService,
+        DEFAULT_MAX_CONCURRENT_ASSOCIATIONS,
+    },
     db::Database,
-    dicom::{extract_local_instance, managed_file_path, read_u16_opt_from_mem, DefaultMemObject},
+    dicom::read_u16_opt_from_mem,
     error::Result,
     models::ScpSessionReport,
+    net::metrics::{ServerMetrics, ServerMetricsSnapshot},
 };
 
 use super::{
-    assoc::{create_echo_response, create_store_response, AssociationFactory},
-    transfer::{all_supported_transfer_syntaxes, STORAGE_ABSTRACT_SYNTAXES},
+    assoc::AssociationFactory,
+    service::{
+        DimseServiceKind, FindCommand, GetCommand, MoveCommand, ProviderRegistration,
+        QueryProvider, RetrieveProvider, ServiceClassRegistry, StorageProvider, StoreCommand,
+        VerificationProvider,
+    },
+    transfer::all_supported_transfer_syntaxes,
 };
 
 #[derive(Debug, Clone)]
@@ -133,10 +140,10 @@ mod policy_tests {
 }
 
 impl InboundAssociationPolicy {
-    fn from_config(config: &AppConfig) -> Self {
+    fn from_local_ae(ae: &LocalAeConfig) -> Self {
         Self {
-            allowed_calling_aet: config.allowed_calling_aet.clone(),
-            allowed_peer_ips: config.allowed_peer_ips.clone(),
+            allowed_calling_aet: ae.allowed_calling_aet.clone(),
+            allowed_peer_ips: ae.allowed_peer_ips.clone(),
         }
     }
 
@@ -182,6 +189,7 @@ pub struct StorageScpServer {
     config: AppConfig,
     paths: AppPaths,
     db: Database,
+    metrics: ServerMetrics,
 }
 
 #[derive(Debug)]
@@ -190,36 +198,129 @@ pub struct BackgroundStorageScp {
     received: Arc<AtomicU32>,
     stored: Arc<AtomicU32>,
     failed: Arc<AtomicU32>,
+    ae_title: String,
+    bind_addr: String,
+    max_concurrent_associations: usize,
     port: u16,
     join_handle: Option<std::thread::JoinHandle<Result<()>>>,
 }
 
-#[derive(Debug, Clone)]
-struct CurrentStoreCommand {
-    message_id: u16,
-    sop_class_uid: String,
-    sop_instance_uid: String,
-    presentation_context_id: u8,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundStorageScpListener {
+    pub ae_title: String,
+    pub bind_addr: String,
+    pub port: u16,
+    pub max_concurrent_associations: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageScpRuntimeOptions {
+    pub global_max_concurrent_associations: Option<usize>,
+    pub association_slot_wait_timeout: Duration,
+    pub shutdown_timeout: Duration,
+}
+
+impl Default for StorageScpRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            global_max_concurrent_associations: None,
+            association_slot_wait_timeout: Duration::ZERO,
+            shutdown_timeout: Duration::from_secs(5),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BackgroundStorageScpSet {
+    listeners: Vec<BackgroundStorageScpListener>,
+    servers: Vec<BackgroundStorageScp>,
+    global_limiter: Option<AssociationLimiter>,
+    shutdown_timeout: Duration,
 }
 
 impl StorageScpServer {
     pub fn new(config: AppConfig, paths: AppPaths, db: Database) -> Self {
-        Self { config, paths, db }
+        Self {
+            config,
+            paths,
+            db,
+            metrics: ServerMetrics::default(),
+        }
+    }
+
+    pub fn metrics(&self) -> ServerMetrics {
+        self.metrics.clone()
+    }
+
+    pub fn metrics_snapshot(&self) -> ServerMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     pub fn run_forever(&self) -> Result<ScpSessionReport> {
+        let aes = vec![self.legacy_local_ae_for_server()?];
         let stop = Arc::new(AtomicBool::new(false));
         let received = Arc::new(AtomicU32::new(0));
         let stored = Arc::new(AtomicU32::new(0));
         let failed = Arc::new(AtomicU32::new(0));
-        let listener = self.bind_listener()?;
-        self.run_until_stop(
+
+        let mut listeners = Vec::new();
+        for ae in aes {
+            let listener = self.bind_listener_for_ae(&ae)?;
+            listeners.push((listener, ae));
+        }
+
+        let mut join_handles = Vec::new();
+        while listeners.len() > 1 {
+            let (listener, ae) = listeners
+                .pop()
+                .expect("listener exists while len greater than one");
+            let server = self.clone();
+            let thread_stop = stop.clone();
+            let thread_received = received.clone();
+            let thread_stored = stored.clone();
+            let thread_failed = failed.clone();
+            join_handles.push(std::thread::spawn(move || {
+                server.run_until_stop(
+                    listener,
+                    ae,
+                    None,
+                    Duration::ZERO,
+                    thread_stop,
+                    thread_received,
+                    thread_stored,
+                    thread_failed,
+                )
+            }));
+        }
+
+        let (listener, ae) = listeners
+            .pop()
+            .expect("configured_local_aes_for_server returns at least one AE");
+        let mut run_result = self.run_until_stop(
             listener,
-            stop,
+            ae,
+            None,
+            Duration::ZERO,
+            stop.clone(),
             received.clone(),
             stored.clone(),
             failed.clone(),
-        )?;
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        for join_handle in join_handles {
+            match join_handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) if run_result.is_ok() => run_result = Err(err),
+                Ok(Err(_)) => {}
+                Err(_) if run_result.is_ok() => {
+                    run_result = Err(anyhow!("storage SCP thread panicked"));
+                }
+                Err(_) => {}
+            }
+        }
+
+        run_result?;
 
         Ok(ScpSessionReport {
             received: received.load(Ordering::Relaxed),
@@ -229,16 +330,66 @@ impl StorageScpServer {
     }
 
     pub fn spawn_background(&self) -> Result<BackgroundStorageScp> {
+        let ae = self.legacy_local_ae_for_server()?;
+        self.spawn_background_for_ae(ae, None, StorageScpRuntimeOptions::default())
+    }
+
+    pub fn spawn_configured_background(&self) -> Result<BackgroundStorageScpSet> {
+        self.spawn_configured_background_with_options(StorageScpRuntimeOptions::default())
+    }
+
+    pub fn spawn_configured_background_with_options(
+        &self,
+        options: StorageScpRuntimeOptions,
+    ) -> Result<BackgroundStorageScpSet> {
+        let global_limiter = options
+            .global_max_concurrent_associations
+            .map(AssociationLimiter::new);
+        let mut servers = Vec::new();
+        let mut listeners = Vec::new();
+        for ae in self.configured_local_aes_for_server()? {
+            match self.spawn_background_for_ae(ae, global_limiter.clone(), options) {
+                Ok(server) => {
+                    listeners.push(server.listener());
+                    servers.push(server);
+                }
+                Err(err) => {
+                    for server in servers {
+                        let _ = server.stop();
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(BackgroundStorageScpSet {
+            listeners,
+            servers,
+            global_limiter,
+            shutdown_timeout: options.shutdown_timeout,
+        })
+    }
+
+    fn spawn_background_for_ae(
+        &self,
+        ae: LocalAeConfig,
+        global_limiter: Option<AssociationLimiter>,
+        options: StorageScpRuntimeOptions,
+    ) -> Result<BackgroundStorageScp> {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let received = Arc::new(AtomicU32::new(0));
         let stored = Arc::new(AtomicU32::new(0));
         let failed = Arc::new(AtomicU32::new(0));
-        let listener = self.bind_listener()?;
+        let listener = self.bind_listener_for_ae(&ae)?;
+        let local_addr = listener
+            .local_addr()
+            .context("reading storage SCP listener address")?;
         let port = listener
             .local_addr()
             .context("reading storage SCP listener port")?
             .port();
         let server = self.clone();
+        let thread_ae = ae.clone();
         let thread_stop = stop_flag.clone();
         let thread_received = received.clone();
         let thread_stored = stored.clone();
@@ -246,6 +397,9 @@ impl StorageScpServer {
         let join_handle = std::thread::spawn(move || {
             server.run_until_stop(
                 listener,
+                thread_ae,
+                global_limiter,
+                options.association_slot_wait_timeout,
                 thread_stop,
                 thread_received,
                 thread_stored,
@@ -257,18 +411,67 @@ impl StorageScpServer {
             received,
             stored,
             failed,
+            ae_title: ae.title,
+            bind_addr: local_addr.to_string(),
+            max_concurrent_associations: ae.max_concurrent_associations,
             port,
             join_handle: Some(join_handle),
         })
     }
 
-    fn bind_listener(&self) -> Result<TcpListener> {
-        let addr = self.config.storage_socket_addr();
+    fn configured_local_aes_for_server(&self) -> Result<Vec<LocalAeConfig>> {
+        if self.config.local_aes.is_empty() {
+            return Err(anyhow!(
+                "local_aes must contain at least one AE to start storage SCP"
+            ));
+        }
+        Ok(self.config.local_aes.clone())
+    }
+
+    fn legacy_local_ae_for_server(&self) -> Result<LocalAeConfig> {
+        if self.config.local_aes.is_empty() {
+            return Err(anyhow!(
+                "local_aes must contain at least one AE to start storage SCP"
+            ));
+        }
+
+        let mut ae = self
+            .config
+            .local_aes
+            .iter()
+            .find(|ae| ae.title == self.config.local_ae_title)
+            .cloned()
+            .unwrap_or_else(|| LocalAeConfig {
+                title: self.config.local_ae_title.clone(),
+                bind_addr: self.config.storage_socket_addr(),
+                services: vec![
+                    LocalAeService::Verification,
+                    LocalAeService::Storage,
+                    LocalAeService::Query,
+                    LocalAeService::Retrieve,
+                ],
+                max_concurrent_associations: DEFAULT_MAX_CONCURRENT_ASSOCIATIONS,
+                allowed_calling_aet: self.config.allowed_calling_aet.clone(),
+                allowed_peer_ips: self.config.allowed_peer_ips.clone(),
+            });
+        ae.title = self.config.local_ae_title.clone();
+        ae.bind_addr = self.config.storage_socket_addr();
+        if ae.allowed_calling_aet.is_empty() {
+            ae.allowed_calling_aet = self.config.allowed_calling_aet.clone();
+        }
+        if ae.allowed_peer_ips.is_empty() {
+            ae.allowed_peer_ips = self.config.allowed_peer_ips.clone();
+        }
+        Ok(ae)
+    }
+
+    fn bind_listener_for_ae(&self, ae: &LocalAeConfig) -> Result<TcpListener> {
+        let addr = &ae.bind_addr;
         let listener = TcpListener::bind(&addr).with_context(|| {
             format!(
-                "binding storage SCP at {} for AE {}. Another local DICOM receiver may already be using that port. Update storage_scp_port in {} or stop the conflicting listener",
+                "binding storage SCP at {} for AE {}. Another local DICOM receiver may already be using that port. Update storage_scp_port/local_aes in {} or stop the conflicting listener",
                 addr,
-                self.config.local_ae_title,
+                ae.title,
                 self.paths.config_json.display()
             )
         })?;
@@ -281,24 +484,46 @@ impl StorageScpServer {
     fn run_until_stop(
         &self,
         listener: TcpListener,
+        ae: LocalAeConfig,
+        global_limiter: Option<AssociationLimiter>,
+        association_slot_wait_timeout: Duration,
         stop_flag: Arc<AtomicBool>,
         received: Arc<AtomicU32>,
         stored: Arc<AtomicU32>,
         failed: Arc<AtomicU32>,
     ) -> Result<()> {
+        let association_limiter = AssociationLimiter::new(ae.max_concurrent_associations);
         while !stop_flag.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((stream, _addr)) => {
-                    stream
-                        .set_nonblocking(false)
-                        .context("setting accepted storage socket to blocking mode")?;
+                Ok((stream, addr)) => {
+                    let Some(association_permits) = acquire_association_permits(
+                        &association_limiter,
+                        global_limiter.as_ref(),
+                        association_slot_wait_timeout,
+                        &stop_flag,
+                    ) else {
+                        warn!(
+                            "rejected storage association from {} for AE {} because association concurrency limit is reached",
+                            addr, ae.title
+                        );
+                        self.metrics.record_association_rejected();
+                        continue;
+                    };
+
+                    if let Err(err) = stream.set_nonblocking(false) {
+                        return Err(err)
+                            .context("setting accepted storage socket to blocking mode");
+                    }
                     let server = self.clone();
+                    let connection_ae = ae.clone();
                     let connection_received = received.clone();
                     let connection_stored = stored.clone();
                     let connection_failed = failed.clone();
                     std::thread::spawn(move || {
+                        let _association_permits = association_permits;
                         if let Err(err) = server.handle_connection(
                             stream,
+                            &connection_ae,
                             connection_received,
                             connection_stored,
                             connection_failed,
@@ -320,6 +545,7 @@ impl StorageScpServer {
     fn handle_connection(
         &self,
         stream: TcpStream,
+        ae: &LocalAeConfig,
         received: Arc<AtomicU32>,
         stored: Arc<AtomicU32>,
         failed: Arc<AtomicU32>,
@@ -327,10 +553,35 @@ impl StorageScpServer {
         let peer_socket_addr = stream
             .peer_addr()
             .context("reading storage SCP peer socket address")?;
+        let mut ae_config = self.config.clone();
+        ae_config.local_ae_title = ae.title.clone();
+        let verification_provider = VerificationProvider::new();
+        let query_provider = QueryProvider::with_metrics(
+            SqliteArchiveCatalog::new(self.db.clone()),
+            self.metrics.clone(),
+        );
+        let retrieve_provider = RetrieveProvider::with_metrics(
+            ae_config.clone(),
+            self.db.clone(),
+            self.metrics.clone(),
+        );
+        let storage_provider = StorageProvider::with_metrics(
+            ae_config,
+            self.paths.clone(),
+            self.db.clone(),
+            self.metrics.clone(),
+        );
+        let registry = registry_for_local_ae(
+            ae,
+            &verification_provider,
+            &query_provider,
+            &retrieve_provider,
+            &storage_provider,
+        );
 
         let mut options = ServerAssociationOptions::new()
             .accept_called_ae_title()
-            .ae_title(self.config.local_ae_title.clone())
+            .ae_title(ae.title.clone())
             .strict(self.config.strict_pdu)
             .max_pdu_length(self.config.max_pdu_length)
             .promiscuous(self.config.allow_promiscuous_storage)
@@ -340,17 +591,21 @@ impl StorageScpServer {
         for ts in all_supported_transfer_syntaxes() {
             options = options.with_transfer_syntax(ts);
         }
-        for abstract_syntax in STORAGE_ABSTRACT_SYNTAXES {
-            options = options.with_abstract_syntax(*abstract_syntax);
+        for abstract_syntax in registry.supported_abstract_syntaxes() {
+            options = options.with_abstract_syntax(abstract_syntax);
         }
 
-        let mut association = options
-            .establish(stream)
-            .context("establishing storage SCP association")?;
+        let mut association = match options.establish(stream) {
+            Ok(association) => association,
+            Err(err) => {
+                return Err(err).context("establishing storage SCP association");
+            }
+        };
         let peer_ae_title = association.peer_ae_title().to_string();
 
-        let policy = InboundAssociationPolicy::from_config(&self.config);
+        let policy = InboundAssociationPolicy::from_local_ae(ae);
         if !policy.is_allowed(&peer_socket_addr, &peer_ae_title) {
+            self.metrics.record_association_rejected();
             warn!(
                 "rejected storage association from {} ({}) due to inbound association policy",
                 normalize_ae_title(&peer_ae_title),
@@ -359,16 +614,44 @@ impl StorageScpServer {
             return Ok(());
         }
 
+        let correlation_id = uuid::Uuid::new_v4().to_string();
+        let association_started = std::time::Instant::now();
+        self.metrics.record_association_accepted();
+        let abstract_syntaxes = association
+            .presentation_contexts()
+            .iter()
+            .map(|context| context.abstract_syntax.as_str())
+            .collect::<Vec<_>>();
+        let negotiated_services = abstract_syntaxes
+            .iter()
+            .filter_map(|syntax| {
+                registry
+                    .providers()
+                    .iter()
+                    .find(|provider| provider.supports_abstract_syntax(syntax))
+                    .map(|provider| format!("{}:{syntax}", provider.name))
+            })
+            .collect::<Vec<_>>();
         info!(
-            "accepted storage association from {} ({}) with {} negotiated presentation contexts",
-            peer_ae_title,
-            peer_socket_addr,
-            association.presentation_contexts().len()
+            correlation_id = %correlation_id,
+            calling_ae = %normalize_ae_title(&peer_ae_title),
+            called_ae = %ae.title,
+            peer = %peer_socket_addr,
+            negotiated_presentation_contexts = association.presentation_contexts().len(),
+            abstract_syntaxes = ?abstract_syntaxes,
+            negotiated_services = ?negotiated_services,
+            "accepted storage association"
         );
 
         let mut command_buffer = Vec::new();
         let mut accumulated_bytes: u64 = 0;
-        let mut current_store: Option<CurrentStoreCommand> = None;
+        let mut current_store: Option<StoreCommand> = None;
+        let mut current_find: Option<FindCommand> = None;
+        let mut find_dataset_bytes: Vec<u8> = Vec::new();
+        let mut current_move: Option<MoveCommand> = None;
+        let mut move_dataset_bytes: Vec<u8> = Vec::new();
+        let mut current_get: Option<GetCommand> = None;
+        let mut get_dataset_bytes: Vec<u8> = Vec::new();
 
         // Stream incoming dataset PDV bytes to a temporary file to avoid buffering
         // the entire dataset in memory.
@@ -383,6 +666,7 @@ impl StorageScpServer {
         // Ensure we delete in-flight temp files on release/abort/connection error.
         let mut _temp_dataset_cleanup_guard: Option<RemoveFileOnDrop> = None;
 
+        let final_association_status: &'static str;
         loop {
             match association.receive() {
                 Ok(Pdu::PData { data }) => {
@@ -398,53 +682,40 @@ impl StorageScpServer {
                                     let command_field =
                                         read_u16_opt_from_mem(&command, tags::COMMAND_FIELD)
                                             .ok_or_else(|| anyhow!("missing command field"))?;
+                                    let abstract_syntax = negotiated_abstract_syntax(
+                                        &association,
+                                        value.presentation_context_id,
+                                    )?;
 
-                                    match command_field {
-                                        0x0030 => {
-                                            let message_id =
-                                                read_u16_opt_from_mem(&command, tags::MESSAGE_ID)
-                                                    .ok_or_else(|| {
-                                                    anyhow!("missing C-ECHO message id")
-                                                })?;
-                                            let response = create_echo_response(message_id, 0x0000);
-                                            let response_bytes =
-                                                AssociationFactory::write_command_dataset(
-                                                    &response,
-                                                )?;
-                                            association.send(&Pdu::PData {
-                                                data: vec![PDataValue {
-                                                    presentation_context_id: value
-                                                        .presentation_context_id,
-                                                    value_type: PDataValueType::Command,
-                                                    is_last: true,
-                                                    data: response_bytes,
-                                                }],
-                                            })?;
+                                    match provider_for_command(
+                                        &registry,
+                                        command_field,
+                                        abstract_syntax,
+                                        self.config.allow_promiscuous_storage,
+                                    ) {
+                                        Ok(provider)
+                                            if provider.kind == DimseServiceKind::Verification =>
+                                        {
+                                            verification_provider.handle_command(
+                                                &mut association,
+                                                &command,
+                                                value.presentation_context_id,
+                                            )?;
                                         }
-                                        0x0001 => {
-                                            let message_id =
-                                                read_u16_opt_from_mem(&command, tags::MESSAGE_ID)
-                                                    .ok_or_else(|| {
-                                                    anyhow!("missing C-STORE message id")
-                                                })?;
-                                            let sop_class_uid = command
-                                                .element(tags::AFFECTED_SOP_CLASS_UID)?
-                                                .to_str()?
-                                                .trim_end_matches('\0')
-                                                .to_string();
-                                            let sop_instance_uid = command
-                                                .element(tags::AFFECTED_SOP_INSTANCE_UID)?
-                                                .to_str()?
-                                                .trim_end_matches('\0')
-                                                .to_string();
-
-                                            current_store = Some(CurrentStoreCommand {
-                                                message_id,
-                                                sop_class_uid,
-                                                sop_instance_uid,
-                                                presentation_context_id: value
-                                                    .presentation_context_id,
-                                            });
+                                        Ok(provider)
+                                            if provider.kind == DimseServiceKind::Storage =>
+                                        {
+                                            current_find = None;
+                                            find_dataset_bytes.clear();
+                                            current_move = None;
+                                            move_dataset_bytes.clear();
+                                            current_get = None;
+                                            get_dataset_bytes.clear();
+                                            current_store =
+                                                Some(storage_provider.begin_store_command(
+                                                    &command,
+                                                    value.presentation_context_id,
+                                                )?);
 
                                             if let Some(path) = temp_dataset_path.take() {
                                                 let _ = fs::remove_file(path);
@@ -453,16 +724,154 @@ impl StorageScpServer {
                                             temp_dataset_writer = None;
                                             accumulated_bytes = 0;
                                         }
-                                        other => {
-                                            warn!("unsupported DIMSE command 0x{other:04X}");
+                                        Ok(provider)
+                                            if provider.kind == DimseServiceKind::Query =>
+                                        {
+                                            current_store = None;
+                                            current_move = None;
+                                            move_dataset_bytes.clear();
+                                            current_get = None;
+                                            get_dataset_bytes.clear();
+                                            current_find =
+                                                Some(query_provider.begin_find_command(
+                                                    &command,
+                                                    value.presentation_context_id,
+                                                )?);
+                                            find_dataset_bytes.clear();
+
+                                            let data_set_type = read_u16_opt_from_mem(
+                                                &command,
+                                                tags::COMMAND_DATA_SET_TYPE,
+                                            )
+                                            .unwrap_or(0x0101);
+                                            if data_set_type == 0x0101 {
+                                                if let Some(find_command) = current_find.take() {
+                                                    query_provider.handle_find_command(
+                                                        &mut association,
+                                                        &find_command,
+                                                        &[],
+                                                    )?;
+                                                }
+                                            }
+                                        }
+                                        Ok(provider)
+                                            if provider.kind == DimseServiceKind::Retrieve =>
+                                        {
+                                            current_store = None;
+                                            current_find = None;
+                                            find_dataset_bytes.clear();
+                                            current_move = None;
+                                            move_dataset_bytes.clear();
+                                            current_get = None;
+                                            get_dataset_bytes.clear();
+
+                                            let data_set_type = read_u16_opt_from_mem(
+                                                &command,
+                                                tags::COMMAND_DATA_SET_TYPE,
+                                            )
+                                            .unwrap_or(0x0101);
+                                            if command_field == 0x0021 {
+                                                current_move =
+                                                    Some(retrieve_provider.begin_move_command(
+                                                        &command,
+                                                        value.presentation_context_id,
+                                                    )?);
+                                                if data_set_type == 0x0101 {
+                                                    if let Some(move_command) = current_move.take()
+                                                    {
+                                                        retrieve_provider.handle_move_command(
+                                                            &mut association,
+                                                            &move_command,
+                                                            &[],
+                                                        )?;
+                                                    }
+                                                }
+                                            } else if command_field == 0x0010 {
+                                                current_get =
+                                                    Some(retrieve_provider.begin_get_command(
+                                                        &command,
+                                                        value.presentation_context_id,
+                                                    )?);
+                                                if data_set_type == 0x0101 {
+                                                    if let Some(get_command) = current_get.take() {
+                                                        retrieve_provider.handle_get_command(
+                                                            &mut association,
+                                                            &get_command,
+                                                            &[],
+                                                        )?;
+                                                    }
+                                                }
+                                            } else {
+                                                warn!(
+                                                    "retrieve provider received unsupported command 0x{command_field:04X}"
+                                                );
+                                            }
+                                        }
+                                        Ok(provider) => {
+                                            warn!(
+                                                "DIMSE provider {} is registered but not implemented in this listener",
+                                                provider.name
+                                            );
+                                        }
+                                        Err(err) => {
+                                            warn!("{err:#}");
                                         }
                                     }
                                 }
                             }
                             PDataValueType::Data => {
+                                if let Some(find_command) = current_find.as_ref() {
+                                    find_dataset_bytes.extend_from_slice(&value.data);
+                                    if value.is_last {
+                                        let find_command = find_command.clone();
+                                        current_find = None;
+                                        let identifier_bytes =
+                                            std::mem::take(&mut find_dataset_bytes);
+                                        query_provider.handle_find_command(
+                                            &mut association,
+                                            &find_command,
+                                            &identifier_bytes,
+                                        )?;
+                                    }
+                                    continue;
+                                }
+
+                                if let Some(move_command) = current_move.as_ref() {
+                                    move_dataset_bytes.extend_from_slice(&value.data);
+                                    if value.is_last {
+                                        let move_command = move_command.clone();
+                                        current_move = None;
+                                        let identifier_bytes =
+                                            std::mem::take(&mut move_dataset_bytes);
+                                        retrieve_provider.handle_move_command(
+                                            &mut association,
+                                            &move_command,
+                                            &identifier_bytes,
+                                        )?;
+                                    }
+                                    continue;
+                                }
+
+                                if let Some(get_command) = current_get.as_ref() {
+                                    get_dataset_bytes.extend_from_slice(&value.data);
+                                    if value.is_last {
+                                        let get_command = get_command.clone();
+                                        current_get = None;
+                                        let identifier_bytes =
+                                            std::mem::take(&mut get_dataset_bytes);
+                                        retrieve_provider.handle_get_command(
+                                            &mut association,
+                                            &get_command,
+                                            &identifier_bytes,
+                                        )?;
+                                    }
+                                    continue;
+                                }
+
                                 let projected_bytes =
                                     accumulated_bytes.saturating_add(value.data.len() as u64);
-                                let max_store_object_bytes = self.config.max_store_object_bytes;
+                                let max_store_object_bytes =
+                                    storage_provider.max_store_object_bytes();
 
                                 if let Some(max_store_object_bytes) = max_store_object_bytes {
                                     if projected_bytes > max_store_object_bytes {
@@ -472,13 +881,16 @@ impl StorageScpServer {
                                         if let Some(store_command) = current_store.take() {
                                             received.fetch_add(1, Ordering::Relaxed);
                                             failed.fetch_add(1, Ordering::Relaxed);
+                                            self.metrics.record_c_store_received();
+                                            self.metrics.record_c_store_failed();
                                             error!(
                                                 accumulated_bytes,
                                                 projected_bytes,
                                                 max_store_object_bytes,
+                                                dimse_status = "0xA700",
                                                 "failed to persist incoming object: C-STORE dataset exceeded configured size limit"
                                             );
-                                            send_store_response(
+                                            storage_provider.send_store_response(
                                                 &mut association,
                                                 &store_command,
                                                 0xA700,
@@ -488,6 +900,16 @@ impl StorageScpServer {
                                             let _ = fs::remove_file(path);
                                         }
                                         _temp_dataset_cleanup_guard = None;
+                                        info!(
+                                            correlation_id = %correlation_id,
+                                            calling_ae = %normalize_ae_title(&peer_ae_title),
+                                            called_ae = %ae.title,
+                                            peer = %peer_socket_addr,
+                                            status = "failed",
+                                            dimse_status = "0xA700",
+                                            duration_ms = association_started.elapsed().as_millis() as u64,
+                                            "storage association finished"
+                                        );
                                         return Ok(());
                                     }
                                 }
@@ -518,6 +940,7 @@ impl StorageScpServer {
                                 if value.is_last {
                                     if let Some(store_command) = current_store.take() {
                                         received.fetch_add(1, Ordering::Relaxed);
+                                        self.metrics.record_c_store_received();
 
                                         if let Some(writer) = temp_dataset_writer.as_mut() {
                                             writer.flush().context("flushing temp dataset file")?;
@@ -529,7 +952,7 @@ impl StorageScpServer {
                                         {
                                             // Keep the drop guard armed so we also clean up in case
                                             // persist_store fails/panics.
-                                            let result = self.persist_store(
+                                            let result = storage_provider.persist_store(
                                                 &association,
                                                 &store_command,
                                                 &temp_path,
@@ -539,10 +962,12 @@ impl StorageScpServer {
                                             match result {
                                                 Ok(()) => {
                                                     stored.fetch_add(1, Ordering::Relaxed);
+                                                    self.metrics.record_c_store_stored();
                                                     0x0000
                                                 }
                                                 Err(err) => {
                                                     failed.fetch_add(1, Ordering::Relaxed);
+                                                    self.metrics.record_c_store_failed();
                                                     error!(
                                                         "failed to persist incoming object: {err:#}"
                                                     );
@@ -551,6 +976,7 @@ impl StorageScpServer {
                                             }
                                         } else {
                                             failed.fetch_add(1, Ordering::Relaxed);
+                                            self.metrics.record_c_store_failed();
                                             error!(
                                                 "failed to persist incoming object: missing temp dataset path"
                                             );
@@ -559,7 +985,7 @@ impl StorageScpServer {
 
                                         accumulated_bytes = 0;
 
-                                        send_store_response(
+                                        storage_provider.send_store_response(
                                             &mut association,
                                             &store_command,
                                             status,
@@ -579,11 +1005,13 @@ impl StorageScpServer {
                 }
                 Ok(Pdu::ReleaseRQ) => {
                     association.send(&Pdu::ReleaseRP)?;
+                    final_association_status = "released";
                     // best-effort cleanup of any in-flight dataset (drop the guard)
                     _temp_dataset_cleanup_guard = None;
                     break;
                 }
                 Ok(Pdu::AbortRQ { source }) => {
+                    final_association_status = "aborted";
                     warn!(
                         "peer {} aborted storage association: {:?}",
                         peer_ae_title, source
@@ -593,11 +1021,13 @@ impl StorageScpServer {
                     break;
                 }
                 Ok(Pdu::ReleaseRP) => {
+                    final_association_status = "released";
                     _temp_dataset_cleanup_guard = None;
                     break;
                 }
                 Ok(_) => {}
                 Err(err) => {
+                    final_association_status = "error";
                     warn!("storage association error from {}: {err:#}", peer_ae_title);
                     // best-effort cleanup of any in-flight dataset (drop the guard)
                     _temp_dataset_cleanup_guard = None;
@@ -606,140 +1036,178 @@ impl StorageScpServer {
             }
         }
 
-        Ok(())
-    }
-
-    fn persist_store(
-        &self,
-        association: &dicom_ul::association::ServerAssociation<TcpStream>,
-        store_command: &CurrentStoreCommand,
-        dataset_path: &std::path::Path,
-    ) -> Result<()> {
-        let context = association
-            .presentation_contexts()
-            .iter()
-            .find(|pc| pc.id == store_command.presentation_context_id)
-            .ok_or_else(|| anyhow!("missing negotiated presentation context"))?;
-
-        let transfer_syntax = TransferSyntaxRegistry
-            .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
-
-        // `dataset_path` points to a complete DICOM dataset (no file meta/preamble).
-        // Parse directly from disk to keep memory usage bounded.
-        let mut remove_dataset_on_drop = RemoveFileOnDrop::new(dataset_path);
-
-        let mut dataset_file = fs::File::open(dataset_path)
-            .with_context(|| format!("opening {}", dataset_path.display()))?;
-        dataset_file
-            .seek(SeekFrom::Start(0))
-            .context("seeking temp dataset file")?;
-        let obj = DefaultMemObject::read_dataset_with_ts(&mut dataset_file, transfer_syntax)
-            .context("reading incoming C-STORE dataset")?;
-
-        remove_dataset_on_drop.disarm();
-
-        let study_uid = obj
-            .element(tags::STUDY_INSTANCE_UID)?
-            .to_str()?
-            .trim_end_matches('\0')
-            .to_string();
-        let series_uid = obj
-            .element(tags::SERIES_INSTANCE_UID)?
-            .to_str()?
-            .trim_end_matches('\0')
-            .to_string();
-
-        let managed_path = managed_file_path(
-            &self.paths.managed_store_dir,
-            &study_uid,
-            &series_uid,
-            &store_command.sop_instance_uid,
+        info!(
+            correlation_id = %correlation_id,
+            calling_ae = %normalize_ae_title(&peer_ae_title),
+            called_ae = %ae.title,
+            peer = %peer_socket_addr,
+            status = final_association_status,
+            duration_ms = association_started.elapsed().as_millis() as u64,
+            "storage association finished"
         );
 
-        if let Some(parent) = managed_path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-
-        let meta = FileMetaTableBuilder::new()
-            .media_storage_sop_class_uid(&store_command.sop_class_uid)
-            .media_storage_sop_instance_uid(&store_command.sop_instance_uid)
-            .transfer_syntax(&context.transfer_syntax)
-            .build()
-            .context("building file meta table")?;
-
-        let file_obj = obj.with_exact_meta(meta);
-
-        // Avoid leaving partially-written managed files: write to a sibling
-        // "*.partial" file first, then rename into place.
-        let managed_partial_path = managed_path.with_extension("dcm.partial");
-        let mut remove_partial_on_drop = RemoveFileOnDrop::new(&managed_partial_path);
-
-        let file = fs::File::create(&managed_partial_path)
-            .with_context(|| format!("creating {}", managed_partial_path.display()))?;
-        let writer = BufWriter::new(file);
-        let mut hashing_writer = HashingWriter::new(writer);
-        file_obj
-            .write_all(&mut hashing_writer)
-            .with_context(|| format!("writing {}", managed_partial_path.display()))?;
-        hashing_writer
-            .flush()
-            .with_context(|| format!("flushing {}", managed_partial_path.display()))?;
-        let (sha256, file_size_bytes) = hashing_writer.finalize();
-
-        fs::rename(&managed_partial_path, &managed_path).with_context(|| {
-            format!(
-                "renaming {} -> {}",
-                managed_partial_path.display(),
-                managed_path.display()
-            )
-        })?;
-        remove_partial_on_drop.disarm();
-
-        let indexed_obj = OpenFileOptions::new()
-            .read_until(tags::PIXEL_DATA)
-            .open_file(&managed_path)
-            .with_context(|| format!("opening {}", managed_path.display()))?;
-
-        let instance = extract_local_instance(
-            &indexed_obj,
-            format!(
-                "network://{}@{}",
-                association.peer_ae_title(),
-                now_utc_string()
-            ),
-            &managed_path,
-            sha256,
-            file_size_bytes,
-            Some(now_utc_string()),
-        )?;
-
-        self.db.upsert_instance(&instance)?;
         Ok(())
     }
 }
 
-fn send_store_response(
-    association: &mut dicom_ul::association::ServerAssociation<TcpStream>,
-    store_command: &CurrentStoreCommand,
-    status: u16,
-) -> Result<()> {
-    let response = create_store_response(
-        store_command.message_id,
-        &store_command.sop_class_uid,
-        &store_command.sop_instance_uid,
-        status,
-    );
-    let response_bytes = AssociationFactory::write_command_dataset(&response)?;
-    association.send(&Pdu::PData {
-        data: vec![PDataValue {
-            presentation_context_id: store_command.presentation_context_id,
-            value_type: PDataValueType::Command,
-            is_last: true,
-            data: response_bytes,
-        }],
-    })?;
-    Ok(())
+fn registry_for_local_ae(
+    ae: &LocalAeConfig,
+    verification_provider: &VerificationProvider,
+    query_provider: &QueryProvider,
+    retrieve_provider: &RetrieveProvider,
+    storage_provider: &StorageProvider,
+) -> ServiceClassRegistry {
+    let mut registry = ServiceClassRegistry::new();
+    if ae.services.contains(&LocalAeService::Verification) {
+        registry.register(verification_provider);
+    }
+    if ae.services.contains(&LocalAeService::Query) {
+        registry.register(query_provider);
+    }
+    if ae.services.contains(&LocalAeService::Retrieve) {
+        registry.register(retrieve_provider);
+    }
+    if ae.services.contains(&LocalAeService::Storage) {
+        registry.register(storage_provider);
+    }
+    registry
+}
+
+fn provider_for_command<'a>(
+    registry: &'a ServiceClassRegistry,
+    command_field: u16,
+    abstract_syntax: &str,
+    allow_promiscuous_storage: bool,
+) -> Result<&'a ProviderRegistration> {
+    match registry.provider_for_command(command_field, abstract_syntax) {
+        Ok(provider) => Ok(provider),
+        Err(err) => {
+            if allow_promiscuous_storage && command_field == 0x0001 {
+                if let Some(provider) = registry
+                    .providers()
+                    .iter()
+                    .find(|provider| provider.kind == DimseServiceKind::Storage)
+                {
+                    return Ok(provider);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+fn acquire_association_permits(
+    local_limiter: &AssociationLimiter,
+    global_limiter: Option<&AssociationLimiter>,
+    timeout: Duration,
+    cancel_flag: &AtomicBool,
+) -> Option<AssociationPermits> {
+    let global_permit = match global_limiter {
+        Some(limiter) => Some(limiter.acquire_until(timeout, cancel_flag)?),
+        None => None,
+    };
+    let local_permit = local_limiter.acquire_until(timeout, cancel_flag)?;
+    Some(AssociationPermits {
+        _global: global_permit,
+        _local: local_permit,
+    })
+}
+
+struct AssociationPermits {
+    _global: Option<AssociationPermit>,
+    _local: AssociationPermit,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AssociationLimiter {
+    active: Arc<AtomicUsize>,
+    max: usize,
+}
+
+impl AssociationLimiter {
+    pub(crate) fn new(max: usize) -> Self {
+        Self {
+            active: Arc::new(AtomicUsize::new(0)),
+            max,
+        }
+    }
+
+    pub(crate) fn acquire_until(
+        &self,
+        timeout: Duration,
+        cancel_flag: &AtomicBool,
+    ) -> Option<AssociationPermit> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if cancel_flag.load(Ordering::Acquire) {
+                return None;
+            }
+            if self.try_acquire() {
+                return Some(AssociationPermit {
+                    active: self.active.clone(),
+                });
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub(crate) fn active(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn wait_until_idle(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while self.active() > 0 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
+    fn try_acquire(&self) -> bool {
+        let mut current = self.active.load(Ordering::Acquire);
+        loop {
+            if current >= self.max {
+                return false;
+            }
+            match self.active.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+    }
+}
+
+pub(crate) struct AssociationPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for AssociationPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn negotiated_abstract_syntax(
+    association: &dicom_ul::association::ServerAssociation<TcpStream>,
+    presentation_context_id: u8,
+) -> Result<&str> {
+    association
+        .presentation_contexts()
+        .iter()
+        .find(|context| context.id == presentation_context_id)
+        .map(|context| context.abstract_syntax.as_str())
+        .ok_or_else(|| anyhow!("missing negotiated presentation context {presentation_context_id}"))
 }
 
 struct RemoveFileOnDrop {
@@ -754,10 +1222,6 @@ impl RemoveFileOnDrop {
             armed: true,
         }
     }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
 }
 
 impl Drop for RemoveFileOnDrop {
@@ -768,47 +1232,21 @@ impl Drop for RemoveFileOnDrop {
     }
 }
 
-struct HashingWriter<W> {
-    inner: W,
-    hasher: Sha256,
-    bytes_written: u64,
-}
-
-impl<W> HashingWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            hasher: Sha256::new(),
-            bytes_written: 0,
+impl BackgroundStorageScp {
+    pub fn listener(&self) -> BackgroundStorageScpListener {
+        BackgroundStorageScpListener {
+            ae_title: self.ae_title.clone(),
+            bind_addr: self.bind_addr.clone(),
+            port: self.port,
+            max_concurrent_associations: self.max_concurrent_associations,
         }
     }
-}
 
-impl<W: Write> HashingWriter<W> {
-    fn finalize(self) -> (String, u64) {
-        (format!("{:x}", self.hasher.finalize()), self.bytes_written)
-    }
-}
-
-impl<W: Write> Write for HashingWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let bytes_written = self.inner.write(buf)?;
-        self.hasher.update(&buf[..bytes_written]);
-        self.bytes_written = self.bytes_written.saturating_add(bytes_written as u64);
-        Ok(bytes_written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-impl BackgroundStorageScp {
     pub fn port(&self) -> u16 {
         self.port
     }
 
-    pub fn stop(mut self) -> Result<ScpSessionReport> {
+    fn stop_listener(&mut self) -> Result<()> {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(join_handle) = self.join_handle.take() {
             match join_handle.join() {
@@ -816,37 +1254,102 @@ impl BackgroundStorageScp {
                 Err(_) => return Err(anyhow!("storage SCP thread panicked")),
             }
         }
-        Ok(ScpSessionReport {
+        Ok(())
+    }
+
+    fn report(&self) -> ScpSessionReport {
+        ScpSessionReport {
             received: self.received.load(Ordering::Relaxed),
             stored: self.stored.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn stop(mut self) -> Result<ScpSessionReport> {
+        self.stop_listener()?;
+        Ok(self.report())
+    }
+}
+
+impl BackgroundStorageScpSet {
+    pub fn listeners(&self) -> &[BackgroundStorageScpListener] {
+        &self.listeners
+    }
+
+    pub fn stop(self) -> Result<ScpSessionReport> {
+        let BackgroundStorageScpSet {
+            mut servers,
+            global_limiter,
+            shutdown_timeout,
+            ..
+        } = self;
+        let mut first_error = None;
+
+        for server in &mut servers {
+            match server.stop_listener() {
+                Ok(()) => {}
+                Err(err) if first_error.is_none() => first_error = Some(err),
+                Err(_) => {}
+            }
+        }
+
+        if let Some(limiter) = &global_limiter {
+            if !limiter.wait_until_idle(shutdown_timeout) {
+                warn!(
+                    "storage SCP shutdown timed out with {} active association(s)",
+                    limiter.active()
+                );
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+
+        let mut received = 0;
+        let mut stored = 0;
+        let mut failed = 0;
+        for server in &servers {
+            let report = server.report();
+            received += report.received;
+            stored += report.stored;
+            failed += report.failed;
+        }
+
+        Ok(ScpSessionReport {
+            received,
+            stored,
+            failed,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::StorageScpServer;
-    use crate::{
-        config::{AppConfig, AppPaths, RECOMMENDED_MAX_PDU_LENGTH},
-        db::Database,
+    use super::{
+        registry_for_local_ae, AssociationLimiter, BackgroundStorageScp, BackgroundStorageScpSet,
+        StorageScpServer,
     };
+    use crate::{
+        archive::SqliteArchiveCatalog,
+        config::{AppConfig, AppPaths, LocalAeConfig, LocalAeService, RECOMMENDED_MAX_PDU_LENGTH},
+        db::Database,
+        net::service::{QueryProvider, RetrieveProvider, StorageProvider, VerificationProvider},
+    };
+    use dicom_dictionary_std::uids::{CT_IMAGE_STORAGE, VERIFICATION};
     use std::{
         fs,
         net::TcpListener,
         process,
-        time::{SystemTime, UNIX_EPOCH},
+        sync::{
+            atomic::{AtomicBool, AtomicU32, Ordering},
+            Arc,
+        },
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     fn temp_paths() -> AppPaths {
-        let unique = format!(
-            "dicom-node-client-test-{}-{}",
-            process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock before unix epoch")
-                .as_nanos()
-        );
+        let unique = format!("dicom-node-client-test-{}", uuid::Uuid::new_v4());
         let base_dir = std::env::temp_dir().join(unique);
         AppPaths {
             config_json: base_dir.join("config.json"),
@@ -890,6 +1393,265 @@ mod tests {
             .contains(&format!("binding storage SCP at 127.0.0.1:{port}")));
 
         let _ = fs::remove_dir_all(paths.base_dir);
+    }
+
+    #[test]
+    fn spawn_configured_background_rejects_empty_local_aes() {
+        let paths = temp_paths();
+        paths.ensure().expect("create temp paths");
+        let db = Database::open(&paths.sqlite_db).expect("open temp db");
+        let config = AppConfig {
+            local_aes: vec![],
+            ..AppConfig::default()
+        };
+        let server = StorageScpServer::new(config, paths.clone(), db);
+
+        let err = server
+            .spawn_configured_background()
+            .expect_err("empty local_aes should reject server start");
+
+        assert!(err.to_string().contains("local_aes must contain"));
+        let _ = fs::remove_dir_all(paths.base_dir);
+    }
+
+    #[test]
+    fn spawn_configured_background_starts_one_listener_per_local_ae() {
+        let paths = temp_paths();
+        paths.ensure().expect("create temp paths");
+        let db = Database::open(&paths.sqlite_db).expect("open temp db");
+        db.init().expect("init temp db");
+        let config = AppConfig {
+            local_ae_title: "LOCALONE".to_string(),
+            storage_bind_addr: "127.0.0.1".to_string(),
+            storage_scp_port: 0,
+            local_aes: vec![
+                LocalAeConfig {
+                    title: "LOCALONE".to_string(),
+                    bind_addr: "127.0.0.1:0".to_string(),
+                    services: vec![LocalAeService::Verification, LocalAeService::Storage],
+                    max_concurrent_associations: 1,
+                    allowed_calling_aet: vec![],
+                    allowed_peer_ips: vec![],
+                },
+                LocalAeConfig {
+                    title: "LOCALTWO".to_string(),
+                    bind_addr: "127.0.0.1:0".to_string(),
+                    services: vec![LocalAeService::Verification],
+                    max_concurrent_associations: 2,
+                    allowed_calling_aet: vec![],
+                    allowed_peer_ips: vec![],
+                },
+            ],
+            ..AppConfig::default()
+        };
+        let server = StorageScpServer::new(config, paths.clone(), db);
+
+        let background = server
+            .spawn_configured_background()
+            .expect("spawn configured local AEs");
+        let listeners = background.listeners();
+        assert_eq!(listeners.len(), 2);
+        assert_eq!(listeners[0].ae_title, "LOCALONE");
+        assert_eq!(listeners[0].max_concurrent_associations, 1);
+        assert_eq!(listeners[1].ae_title, "LOCALTWO");
+        assert_eq!(listeners[1].max_concurrent_associations, 2);
+        assert_ne!(listeners[0].port, 0);
+        assert_ne!(listeners[1].port, 0);
+        assert_ne!(listeners[0].port, listeners[1].port);
+
+        background.stop().expect("stop configured local AEs");
+        let _ = fs::remove_dir_all(paths.base_dir);
+    }
+
+    #[test]
+    fn legacy_storage_scp_ignores_unrelated_configured_ae_bind_port() {
+        let occupied = TcpListener::bind("127.0.0.1:0").expect("bind unrelated port");
+        let occupied_addr = occupied.local_addr().expect("read occupied addr");
+        let paths = temp_paths();
+        paths.ensure().expect("create temp paths");
+        let db = Database::open(&paths.sqlite_db).expect("open temp db");
+        db.init().expect("init temp db");
+        let config = AppConfig {
+            local_ae_title: "LEGACYAE".to_string(),
+            storage_bind_addr: "127.0.0.1".to_string(),
+            storage_scp_port: 0,
+            local_aes: vec![LocalAeConfig {
+                title: "OTHERAE".to_string(),
+                bind_addr: occupied_addr.to_string(),
+                services: vec![LocalAeService::Verification],
+                max_concurrent_associations: 1,
+                allowed_calling_aet: vec![],
+                allowed_peer_ips: vec![],
+            }],
+            ..AppConfig::default()
+        };
+        let server = StorageScpServer::new(config, paths.clone(), db);
+
+        let background = server
+            .spawn_background()
+            .expect("legacy storage SCP should bind advertised listener");
+
+        assert_eq!(background.listener().ae_title, "LEGACYAE");
+        assert_ne!(background.port(), occupied_addr.port());
+        background.stop().expect("stop legacy storage scp");
+        let _ = fs::remove_dir_all(paths.base_dir);
+    }
+
+    #[test]
+    fn configured_stop_waits_for_active_associations_before_summing_reports() {
+        let limiter = AssociationLimiter::new(1);
+        let cancel_flag = AtomicBool::new(false);
+        let permit = limiter
+            .acquire_until(Duration::from_millis(1), &cancel_flag)
+            .expect("acquire active association permit");
+        let received = Arc::new(AtomicU32::new(0));
+        let stored = Arc::new(AtomicU32::new(0));
+        let failed = Arc::new(AtomicU32::new(0));
+
+        let worker_received = received.clone();
+        let worker_stored = stored.clone();
+        let worker_failed = failed.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            worker_received.store(1, Ordering::Relaxed);
+            worker_stored.store(2, Ordering::Relaxed);
+            worker_failed.store(3, Ordering::Relaxed);
+            drop(permit);
+        });
+
+        let server = BackgroundStorageScp {
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            received,
+            stored,
+            failed,
+            ae_title: "LOCAL".to_string(),
+            bind_addr: "127.0.0.1:0".to_string(),
+            max_concurrent_associations: 1,
+            port: 0,
+            join_handle: Some(std::thread::spawn(|| Ok(()))),
+        };
+        let set = BackgroundStorageScpSet {
+            listeners: Vec::new(),
+            servers: vec![server],
+            global_limiter: Some(limiter),
+            shutdown_timeout: Duration::from_secs(1),
+        };
+
+        let report = set.stop().expect("stop configured set");
+        worker.join().expect("worker completes");
+
+        assert_eq!(report.received, 1);
+        assert_eq!(report.stored, 2);
+        assert_eq!(report.failed, 3);
+    }
+
+    #[test]
+    fn local_ae_service_selection_registers_only_enabled_providers() {
+        let paths = temp_paths();
+        paths.ensure().expect("create temp paths");
+        let db = Database::open(&paths.sqlite_db).expect("open temp db");
+        db.init().expect("init temp db");
+        let config = AppConfig::default();
+        let ae = LocalAeConfig {
+            title: "ECHONLY".to_string(),
+            bind_addr: "127.0.0.1:0".to_string(),
+            services: vec![LocalAeService::Verification],
+            max_concurrent_associations: 1,
+            allowed_calling_aet: vec![],
+            allowed_peer_ips: vec![],
+        };
+        let verification_provider = VerificationProvider::new();
+        let query_provider = QueryProvider::new(SqliteArchiveCatalog::new(db.clone()));
+        let retrieve_provider = RetrieveProvider::new(config.clone(), db.clone());
+        let storage_provider = StorageProvider::new(config, paths.clone(), db);
+
+        let registry = registry_for_local_ae(
+            &ae,
+            &verification_provider,
+            &query_provider,
+            &retrieve_provider,
+            &storage_provider,
+        );
+
+        assert_eq!(registry.providers().len(), 1);
+        assert!(registry.supports_abstract_syntax(VERIFICATION));
+        assert!(!registry.supports_abstract_syntax(CT_IMAGE_STORAGE));
+        let _ = fs::remove_dir_all(paths.base_dir);
+    }
+
+    #[test]
+    fn association_limiter_enforces_limit_until_permit_is_dropped() {
+        let limiter = super::AssociationLimiter::new(1);
+        let cancel_flag = AtomicBool::new(false);
+
+        let first = limiter
+            .acquire_until(Duration::from_millis(1), &cancel_flag)
+            .expect("first slot");
+        assert_eq!(limiter.active(), 1);
+        assert!(limiter
+            .acquire_until(Duration::from_millis(5), &cancel_flag)
+            .is_none());
+
+        drop(first);
+
+        assert!(limiter
+            .acquire_until(Duration::from_millis(1), &cancel_flag)
+            .is_some());
+    }
+
+    #[test]
+    fn association_limiter_stops_waiting_when_cancelled() {
+        let limiter = super::AssociationLimiter::new(1);
+        let cancel_flag = AtomicBool::new(true);
+
+        assert!(limiter
+            .acquire_until(Duration::from_millis(50), &cancel_flag)
+            .is_none());
+        assert_eq!(limiter.active(), 0);
+    }
+
+    #[test]
+    fn association_permits_hold_global_and_local_slots_until_drop() {
+        let global = super::AssociationLimiter::new(2);
+        let local = super::AssociationLimiter::new(2);
+        let cancel_flag = AtomicBool::new(false);
+
+        let permits = super::acquire_association_permits(
+            &local,
+            Some(&global),
+            Duration::from_millis(1),
+            &cancel_flag,
+        )
+        .expect("combined permits");
+
+        assert_eq!(global.active(), 1);
+        assert_eq!(local.active(), 1);
+
+        drop(permits);
+
+        assert_eq!(global.active(), 0);
+        assert_eq!(local.active(), 0);
+    }
+
+    #[test]
+    fn association_permits_do_not_consume_local_slot_when_global_limit_is_full() {
+        let global = super::AssociationLimiter::new(1);
+        let local = super::AssociationLimiter::new(2);
+        let cancel_flag = AtomicBool::new(false);
+        let _occupied_global = global
+            .acquire_until(Duration::from_millis(1), &cancel_flag)
+            .expect("occupy global slot");
+
+        assert!(super::acquire_association_permits(
+            &local,
+            Some(&global),
+            Duration::from_millis(5),
+            &cancel_flag,
+        )
+        .is_none());
+
+        assert_eq!(global.active(), 1);
+        assert_eq!(local.active(), 0);
     }
 
     #[test]

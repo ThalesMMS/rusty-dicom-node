@@ -316,6 +316,7 @@ pub struct LocalInstance {
     pub sha256: String,
     pub source_path: String,
     pub managed_path: String,
+    pub attributes_json: Option<String>,
     pub imported_at: String,
 }
 

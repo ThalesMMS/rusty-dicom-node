@@ -474,7 +474,7 @@ impl StoreSendError {
     }
 }
 
-fn can_stream_source_dataset(negotiated_uid: &str, source_uid: &str) -> bool {
+pub(crate) fn can_stream_source_dataset(negotiated_uid: &str, source_uid: &str) -> bool {
     negotiated_uid == source_uid.trim() && is_streaming_transfer_syntax(negotiated_uid)
 }
 
@@ -483,7 +483,7 @@ fn is_streaming_transfer_syntax(uid: &str) -> bool {
         || uid == entries::IMPLICIT_VR_LITTLE_ENDIAN.uid()
 }
 
-fn open_part10_dataset_reader(path: &Path) -> Result<File> {
+pub(crate) fn open_part10_dataset_reader(path: &Path) -> Result<File> {
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     skip_part10_file_meta(&mut file)
         .with_context(|| format!("locating dataset in {}", path.display()))?;

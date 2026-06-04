@@ -42,7 +42,6 @@ pub static STORAGE_ABSTRACT_SYNTAXES: &[&str] = &[
     BASIC_TEXT_SR_STORAGE,
     ENHANCED_SR_STORAGE,
     COMPREHENSIVE_SR_STORAGE,
-    VERIFICATION,
 ];
 
 pub fn all_supported_transfer_syntaxes() -> Vec<String> {

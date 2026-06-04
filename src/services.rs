@@ -1,9 +1,13 @@
-use std::{path::Path, sync::atomic::AtomicBool};
+use std::{
+    path::Path,
+    sync::{atomic::AtomicBool, Arc},
+};
 
 use anyhow::anyhow;
 use uuid::Uuid;
 
 use crate::{
+    archive::{FsObjectStore, SqliteArchiveCatalog},
     cancel,
     config::{AppConfig, AppPaths, MigrationResult},
     db::Database,
@@ -14,7 +18,10 @@ use crate::{
         QueryCriteria, QueryMatch, RemoteNode, RemoteNodeDraft, RemoteNodePatch, ScpSessionReport,
         SendOutcome, SeriesSummary, StudySummary,
     },
-    net::{AssociationFactory, FindScu, MoveScu, StorageScpServer, StoreScu},
+    net::{
+        AssociationFactory, DicomServerRuntime, FindScu, MoveScu, ServerMetricsSnapshot,
+        ServerRuntimeOptions, StorageScpServer, StoreScu,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +29,8 @@ pub struct AppServices {
     pub paths: AppPaths,
     pub config: AppConfig,
     pub db: Database,
+    pub archive_catalog: SqliteArchiveCatalog,
+    pub object_store: FsObjectStore,
     pub importer: Importer,
     pub find_scu: FindScu,
     pub move_scu: MoveScu,
@@ -201,6 +210,8 @@ impl AppServices {
         let config = AppConfig::load_or_create(&paths)?;
         let db = Database::open(&paths.sqlite_db)?;
         db.init()?;
+        let archive_catalog = SqliteArchiveCatalog::new(db.clone());
+        let object_store = FsObjectStore::new(&paths.managed_store_dir);
 
         let importer = Importer::new(paths.clone(), config.clone(), db.clone());
         let assoc_factory = AssociationFactory::new(
@@ -218,6 +229,8 @@ impl AppServices {
             paths,
             config,
             db,
+            archive_catalog,
+            object_store,
             importer,
             find_scu,
             move_scu,
@@ -462,6 +475,18 @@ impl AppServices {
         // Run until a stop is requested (SIGINT). This blocks the current thread.
         // We return a session report so callers can render meaningful summaries.
         self.storage_scp.run_forever()
+    }
+
+    pub fn run_server_runtime(&self, cancel_flag: Arc<AtomicBool>) -> Result<ScpSessionReport> {
+        let runtime = DicomServerRuntime::new(
+            self.storage_scp.clone(),
+            ServerRuntimeOptions::from_config(&self.config),
+        );
+        runtime.run_until_cancelled(cancel_flag)
+    }
+
+    pub fn server_metrics_snapshot(&self) -> ServerMetricsSnapshot {
+        self.storage_scp.metrics_snapshot()
     }
 
     pub fn tui_status_snapshot(&self, receiver_mode: TuiReceiverMode) -> TuiStatusSnapshot {

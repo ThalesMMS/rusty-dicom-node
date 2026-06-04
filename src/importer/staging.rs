@@ -99,7 +99,7 @@ fn sanitized_file_name_fragment(file_name_hint: &Path) -> String {
     }
 }
 
-pub(super) fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn replace_file(source: &Path, destination: &Path) -> Result<()> {
     match fs::rename(source, destination) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -189,7 +189,7 @@ fn is_cross_device_rename_error(error: &io::Error) -> bool {
     }
 }
 
-pub(super) fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -198,24 +198,24 @@ pub(super) fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
 }
 
 #[derive(Debug)]
-pub(super) struct FileCleanupGuard {
+pub(crate) struct FileCleanupGuard {
     path: PathBuf,
     armed: std::cell::Cell<bool>,
 }
 
 impl FileCleanupGuard {
-    pub(super) fn new(path: impl AsRef<Path>) -> Self {
+    pub(crate) fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
             armed: std::cell::Cell::new(true),
         }
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    pub(super) fn disarm(&self) {
+    pub(crate) fn disarm(&self) {
         self.armed.set(false);
     }
 }

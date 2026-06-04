@@ -1,9 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
-use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
-use dicom_dictionary_std::tags;
-use dicom_object::{mem::InMemDicomObject, FileDicomObject, StandardDataDictionary};
+use dicom_core::{
+    dictionary::{DataDictionary, DataDictionaryEntry},
+    header::Header,
+    DataElement, PrimitiveValue, Tag, VR,
+};
+use dicom_dictionary_std::{tags, StandardDataDictionary};
+use dicom_object::{mem::InMemDicomObject, FileDicomObject};
 
 use crate::{
     config::now_utc_string,
@@ -68,6 +72,32 @@ pub fn managed_file_path(
         .join(format!("{}.dcm", sanitize_uid_segment(sop_instance_uid)))
 }
 
+pub fn attributes_json(file_obj: &DefaultFileObject) -> Result<String> {
+    let dictionary = StandardDataDictionary;
+    let mut attributes = serde_json::Map::new();
+
+    for element in file_obj.iter() {
+        let tag = element.tag();
+        if tag == tags::PIXEL_DATA {
+            continue;
+        }
+
+        let Ok(value) = element.value().to_str() else {
+            continue;
+        };
+        let key = dictionary
+            .by_tag(tag)
+            .map(|entry| entry.alias().to_string())
+            .unwrap_or_else(|| format!("({:04X},{:04X})", tag.0, tag.1));
+        attributes.insert(
+            key,
+            serde_json::Value::String(clean_dicom_str(value.as_ref())),
+        );
+    }
+
+    serde_json::to_string(&attributes).map_err(Into::into)
+}
+
 pub fn extract_local_instance(
     file_obj: &DefaultFileObject,
     source_path: String,
@@ -100,6 +130,7 @@ pub fn extract_local_instance(
         sha256,
         source_path,
         managed_path: managed_path.to_string_lossy().to_string(),
+        attributes_json: Some(attributes_json(file_obj)?),
         imported_at: imported_at.unwrap_or_else(now_utc_string),
     })
 }
@@ -365,7 +396,7 @@ pub fn ensure_study_for_series_or_image(request: &MoveRequest) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_find_identifier, dicom_date_range, probe_reader_identity};
+    use super::{attributes_json, build_find_identifier, dicom_date_range, probe_reader_identity};
     use crate::models::{QueryCriteria, QueryLevel, QueryModel};
     use dicom_dictionary_std::tags;
 
@@ -406,6 +437,49 @@ mod tests {
                 .trim_end_matches('\0'),
             "20260411-20260411"
         );
+    }
+
+    #[test]
+    fn attributes_json_preserves_unmapped_tags_and_skips_pixel_data() {
+        use dicom_dictionary_std::uids::EXPLICIT_VR_LITTLE_ENDIAN;
+
+        let sop_class_uid = "1.2.840.10008.5.1.4.1.1.2";
+        let sop_instance_uid = "1.2.3.4.5";
+        let obj = dicom_object::mem::InMemDicomObject::from_element_iter([
+            dicom_core::DataElement::new(
+                tags::MANUFACTURER,
+                dicom_core::VR::LO,
+                dicom_core::PrimitiveValue::from("ACME Scanner"),
+            ),
+            dicom_core::DataElement::new(
+                tags::SOP_CLASS_UID,
+                dicom_core::VR::UI,
+                dicom_core::PrimitiveValue::from(sop_class_uid),
+            ),
+            dicom_core::DataElement::new(
+                tags::SOP_INSTANCE_UID,
+                dicom_core::VR::UI,
+                dicom_core::PrimitiveValue::from(sop_instance_uid),
+            ),
+            dicom_core::DataElement::new(
+                tags::PIXEL_DATA,
+                dicom_core::VR::OB,
+                dicom_core::PrimitiveValue::from(vec![0x55; 8]),
+            ),
+        ]);
+        let meta = dicom_object::FileMetaTableBuilder::new()
+            .media_storage_sop_class_uid(sop_class_uid)
+            .media_storage_sop_instance_uid(sop_instance_uid)
+            .transfer_syntax(EXPLICIT_VR_LITTLE_ENDIAN)
+            .build()
+            .expect("meta");
+        let file_obj = obj.with_exact_meta(meta);
+
+        let json = attributes_json(&file_obj).expect("serialize attributes");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+        assert_eq!(parsed["Manufacturer"], "ACME Scanner");
+        assert!(parsed.get("PixelData").is_none());
     }
 
     #[test]

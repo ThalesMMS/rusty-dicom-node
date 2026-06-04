@@ -1,4 +1,4 @@
-use std::{fmt, fs};
+use std::{collections::BTreeSet, fmt, fs, net::SocketAddr};
 
 use anyhow::Context;
 use dicom_dictionary_std::uids::{
@@ -8,7 +8,10 @@ use dicom_dictionary_std::uids::{
 use serde::{Deserialize, Serialize};
 
 use super::paths::AppPaths;
-use crate::error::Result;
+use crate::{
+    error::Result,
+    models::{normalize_ae_title, validate_ae_title},
+};
 
 pub const LEGACY_DEFAULT_MAX_PDU_LENGTH: u32 = 16_378;
 pub const RECOMMENDED_MAX_PDU_LENGTH: u32 = 262_138;
@@ -17,6 +20,10 @@ pub const DEFAULT_MAX_ZIP_TOTAL_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_ZIP_ENTRY_COUNT: usize = 100_000;
 pub const DEFAULT_MAX_FILE_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_STORE_OBJECT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_CONCURRENT_ASSOCIATIONS: usize = 32;
+pub const DEFAULT_SERVER_MAX_CONCURRENT_ASSOCIATIONS: usize = 128;
+pub const DEFAULT_SERVER_ASSOCIATION_SLOT_WAIT_TIMEOUT_MS: u64 = 1_000;
+pub const DEFAULT_SERVER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 
 // Import hardening defaults. These are stored as Options in the config to preserve
 // backwards compatibility and allow "unset" to mean "no limit" where applicable.
@@ -24,7 +31,11 @@ pub const DEFAULT_MAX_IMPORT_TOTAL_FILES: usize = 1_000_000;
 pub const DEFAULT_MAX_IMPORT_PATH_LENGTH: usize = 4096;
 pub const DEFAULT_MAX_IMPORT_DIRECTORY_DEPTH: usize = 64;
 
-const BACKFILL_CONFIG_KEYS: [&str; 9] = [
+const BACKFILL_CONFIG_KEYS: [&str; 13] = [
+    "local_aes",
+    "server_max_concurrent_associations",
+    "server_association_slot_wait_timeout_ms",
+    "server_shutdown_timeout_ms",
     "preferred_store_transfer_syntax",
     "max_zip_entry_bytes",
     "max_zip_total_bytes",
@@ -76,6 +87,29 @@ impl fmt::Display for StoreTransferSyntaxPreference {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalAeService {
+    Verification,
+    Storage,
+    Query,
+    Retrieve,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalAeConfig {
+    pub title: String,
+    pub bind_addr: String,
+    #[serde(default = "default_local_ae_services")]
+    pub services: Vec<LocalAeService>,
+    #[serde(default = "default_max_concurrent_associations_value")]
+    pub max_concurrent_associations: usize,
+    #[serde(default)]
+    pub allowed_calling_aet: Vec<String>,
+    #[serde(default)]
+    pub allowed_peer_ips: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub local_ae_title: String,
@@ -111,6 +145,16 @@ pub struct AppConfig {
     pub max_file_import_bytes: Option<u64>,
     #[serde(default = "default_max_store_object_bytes")]
     pub max_store_object_bytes: Option<u64>,
+
+    #[serde(default)]
+    pub local_aes: Vec<LocalAeConfig>,
+
+    #[serde(default = "default_server_max_concurrent_associations")]
+    pub server_max_concurrent_associations: usize,
+    #[serde(default = "default_server_association_slot_wait_timeout_ms")]
+    pub server_association_slot_wait_timeout_ms: u64,
+    #[serde(default = "default_server_shutdown_timeout_ms")]
+    pub server_shutdown_timeout_ms: u64,
 
     /// Maximum number of filesystem entries to consider during a single import.
     ///
@@ -149,6 +193,11 @@ impl Default for AppConfig {
             max_zip_entry_count: default_max_zip_entry_count(),
             max_file_import_bytes: default_max_file_import_bytes(),
             max_store_object_bytes: default_max_store_object_bytes(),
+            local_aes: vec![default_legacy_local_ae()],
+            server_max_concurrent_associations: DEFAULT_SERVER_MAX_CONCURRENT_ASSOCIATIONS,
+            server_association_slot_wait_timeout_ms:
+                DEFAULT_SERVER_ASSOCIATION_SLOT_WAIT_TIMEOUT_MS,
+            server_shutdown_timeout_ms: DEFAULT_SERVER_SHUTDOWN_TIMEOUT_MS,
             max_import_total_files: default_max_import_total_files(),
             max_import_path_length: default_max_import_path_length(),
             max_import_directory_depth: default_max_import_directory_depth(),
@@ -188,7 +237,64 @@ fn default_max_import_directory_depth() -> Option<usize> {
     Some(DEFAULT_MAX_IMPORT_DIRECTORY_DEPTH)
 }
 
+fn default_max_concurrent_associations_value() -> usize {
+    DEFAULT_MAX_CONCURRENT_ASSOCIATIONS
+}
+
+fn default_server_max_concurrent_associations() -> usize {
+    DEFAULT_SERVER_MAX_CONCURRENT_ASSOCIATIONS
+}
+
+fn default_server_association_slot_wait_timeout_ms() -> u64 {
+    DEFAULT_SERVER_ASSOCIATION_SLOT_WAIT_TIMEOUT_MS
+}
+
+fn default_server_shutdown_timeout_ms() -> u64 {
+    DEFAULT_SERVER_SHUTDOWN_TIMEOUT_MS
+}
+
+fn default_local_ae_services() -> Vec<LocalAeService> {
+    vec![
+        LocalAeService::Verification,
+        LocalAeService::Storage,
+        LocalAeService::Query,
+        LocalAeService::Retrieve,
+    ]
+}
+
+fn default_legacy_local_ae() -> LocalAeConfig {
+    LocalAeConfig {
+        title: "DICOMNODECLIENT".to_string(),
+        bind_addr: "0.0.0.0:11112".to_string(),
+        services: default_local_ae_services(),
+        max_concurrent_associations: DEFAULT_MAX_CONCURRENT_ASSOCIATIONS,
+        allowed_calling_aet: Vec::new(),
+        allowed_peer_ips: Vec::new(),
+    }
+}
+
 impl AppConfig {
+    fn legacy_local_ae(&self) -> LocalAeConfig {
+        LocalAeConfig {
+            title: normalize_ae_title(&self.local_ae_title),
+            bind_addr: self.storage_socket_addr(),
+            services: default_local_ae_services(),
+            max_concurrent_associations: DEFAULT_MAX_CONCURRENT_ASSOCIATIONS,
+            allowed_calling_aet: self.allowed_calling_aet.clone(),
+            allowed_peer_ips: self.allowed_peer_ips.clone(),
+        }
+    }
+
+    fn normalize_local_aes(&mut self) -> bool {
+        let before_title = self.local_ae_title.clone();
+        let before_aes = self.local_aes.clone();
+        self.local_ae_title = normalize_ae_title(&self.local_ae_title);
+        for ae in &mut self.local_aes {
+            ae.title = normalize_ae_title(&ae.title);
+        }
+        before_title != self.local_ae_title || before_aes != self.local_aes
+    }
+
     fn validate(&self) -> Result<()> {
         fn ensure_nonzero_u64(name: &str, value: Option<u64>) -> Result<()> {
             if let Some(0) = value {
@@ -218,6 +324,54 @@ impl AppConfig {
             "max_import_directory_depth",
             self.max_import_directory_depth,
         )?;
+        if self.server_max_concurrent_associations == 0 {
+            anyhow::bail!("invalid config: server_max_concurrent_associations must be > 0");
+        }
+        if self.server_association_slot_wait_timeout_ms == 0 {
+            anyhow::bail!("invalid config: server_association_slot_wait_timeout_ms must be > 0");
+        }
+        if self.server_shutdown_timeout_ms == 0 {
+            anyhow::bail!("invalid config: server_shutdown_timeout_ms must be > 0");
+        }
+
+        validate_ae_title(&self.local_ae_title)
+            .with_context(|| "validating legacy local_ae_title")?;
+        self.validate_local_aes()?;
+
+        Ok(())
+    }
+
+    fn validate_local_aes(&self) -> Result<()> {
+        let mut nonzero_ports = BTreeSet::new();
+        for ae in &self.local_aes {
+            validate_ae_title(&ae.title)
+                .with_context(|| format!("validating local AE title {}", ae.title))?;
+            if ae.services.is_empty() {
+                anyhow::bail!(
+                    "invalid config: local AE {} must enable at least one service",
+                    ae.title
+                );
+            }
+            if ae.max_concurrent_associations == 0 {
+                anyhow::bail!(
+                    "invalid config: local AE {} max_concurrent_associations must be > 0",
+                    ae.title
+                );
+            }
+
+            let bind_addr: SocketAddr = ae.bind_addr.parse().with_context(|| {
+                format!(
+                    "validating local AE {} bind_addr {}",
+                    ae.title, ae.bind_addr
+                )
+            })?;
+            if bind_addr.port() != 0 && !nonzero_ports.insert(bind_addr.port()) {
+                anyhow::bail!(
+                    "invalid config: duplicate local AE bind port {}",
+                    bind_addr.port()
+                );
+            }
+        }
 
         Ok(())
     }
@@ -233,8 +387,15 @@ impl AppConfig {
             let mut should_save = BACKFILL_CONFIG_KEYS
                 .iter()
                 .any(|key| raw_config.get(key).is_none());
+            if raw_config.get("local_aes").is_none() {
+                cfg.local_aes = vec![cfg.legacy_local_ae()];
+                should_save = true;
+            }
             if cfg.max_pdu_length == LEGACY_DEFAULT_MAX_PDU_LENGTH {
                 cfg.max_pdu_length = RECOMMENDED_MAX_PDU_LENGTH;
+                should_save = true;
+            }
+            if cfg.normalize_local_aes() {
                 should_save = true;
             }
 
@@ -273,9 +434,11 @@ pub fn now_utc_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, StoreTransferSyntaxPreference, DEFAULT_MAX_FILE_IMPORT_BYTES,
+        AppConfig, LocalAeService, StoreTransferSyntaxPreference, DEFAULT_MAX_FILE_IMPORT_BYTES,
         DEFAULT_MAX_STORE_OBJECT_BYTES, DEFAULT_MAX_ZIP_ENTRY_BYTES, DEFAULT_MAX_ZIP_ENTRY_COUNT,
-        DEFAULT_MAX_ZIP_TOTAL_BYTES, LEGACY_DEFAULT_MAX_PDU_LENGTH, RECOMMENDED_MAX_PDU_LENGTH,
+        DEFAULT_MAX_ZIP_TOTAL_BYTES, DEFAULT_SERVER_ASSOCIATION_SLOT_WAIT_TIMEOUT_MS,
+        DEFAULT_SERVER_MAX_CONCURRENT_ASSOCIATIONS, DEFAULT_SERVER_SHUTDOWN_TIMEOUT_MS,
+        LEGACY_DEFAULT_MAX_PDU_LENGTH, RECOMMENDED_MAX_PDU_LENGTH,
     };
     use crate::config::AppPaths;
     use std::fs;
@@ -323,6 +486,18 @@ mod tests {
             AppConfig::default().max_store_object_bytes,
             Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
         );
+        assert_eq!(
+            AppConfig::default().server_max_concurrent_associations,
+            DEFAULT_SERVER_MAX_CONCURRENT_ASSOCIATIONS
+        );
+        assert_eq!(
+            AppConfig::default().server_association_slot_wait_timeout_ms,
+            DEFAULT_SERVER_ASSOCIATION_SLOT_WAIT_TIMEOUT_MS
+        );
+        assert_eq!(
+            AppConfig::default().server_shutdown_timeout_ms,
+            DEFAULT_SERVER_SHUTDOWN_TIMEOUT_MS
+        );
     }
 
     #[test]
@@ -365,15 +540,31 @@ mod tests {
             cfg.max_store_object_bytes,
             Some(DEFAULT_MAX_STORE_OBJECT_BYTES)
         );
+        assert_eq!(cfg.local_aes.len(), 1);
+        assert_eq!(cfg.local_aes[0].title, "DICOMNODECLIENT");
+        assert_eq!(cfg.local_aes[0].bind_addr, "0.0.0.0:11112");
+        assert_eq!(
+            cfg.local_aes[0].services,
+            vec![
+                LocalAeService::Verification,
+                LocalAeService::Storage,
+                LocalAeService::Query,
+                LocalAeService::Retrieve,
+            ]
+        );
 
         let saved = fs::read_to_string(&paths.config_json).expect("read migrated config");
         assert!(saved.contains(&RECOMMENDED_MAX_PDU_LENGTH.to_string()));
+        assert!(saved.contains("\"local_aes\""));
         assert!(saved.contains("\"preferred_store_transfer_syntax\": \"jpeg2000_lossless\""));
         assert!(saved.contains("\"max_zip_entry_bytes\": 2147483648"));
         assert!(saved.contains("\"max_zip_total_bytes\": 53687091200"));
         assert!(saved.contains("\"max_zip_entry_count\": 100000"));
         assert!(saved.contains("\"max_file_import_bytes\": 2147483648"));
         assert!(saved.contains("\"max_store_object_bytes\": 2147483648"));
+        assert!(saved.contains("\"server_max_concurrent_associations\""));
+        assert!(saved.contains("\"server_association_slot_wait_timeout_ms\""));
+        assert!(saved.contains("\"server_shutdown_timeout_ms\""));
     }
 
     #[test]
@@ -420,6 +611,9 @@ mod tests {
         assert!(saved.contains("\"max_zip_entry_count\": 100000"));
         assert!(saved.contains("\"max_file_import_bytes\": 2147483648"));
         assert!(saved.contains("\"max_store_object_bytes\": 2147483648"));
+        assert!(saved.contains("\"server_max_concurrent_associations\""));
+        assert!(saved.contains("\"server_association_slot_wait_timeout_ms\""));
+        assert!(saved.contains("\"server_shutdown_timeout_ms\""));
     }
 
     #[test]
@@ -540,5 +734,179 @@ mod tests {
         assert!(msg.contains("validating config"));
         assert!(msg.contains("max_zip_entry_bytes"));
         assert!(msg.contains("must be > 0"));
+    }
+
+    #[test]
+    fn load_or_create_rejects_zero_server_runtime_limits() {
+        let root = tempdir().expect("create temp dir");
+        let paths = temp_paths(&root);
+        paths.ensure().expect("create temp paths");
+        fs::write(
+            &paths.config_json,
+            concat!(
+                "{\n",
+                "  \"local_ae_title\": \"DICOMNODECLIENT\",\n",
+                "  \"storage_bind_addr\": \"0.0.0.0\",\n",
+                "  \"storage_scp_port\": 11112,\n",
+                "  \"max_pdu_length\": 262138,\n",
+                "  \"strict_pdu\": true,\n",
+                "  \"allow_promiscuous_storage\": false,\n",
+                "  \"server_max_concurrent_associations\": 0\n",
+                "}\n"
+            ),
+        )
+        .expect("write config with invalid runtime limit");
+
+        let err = AppConfig::load_or_create(&paths).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("validating config"));
+        assert!(msg.contains("server_max_concurrent_associations"));
+        assert!(msg.contains("must be > 0"));
+    }
+
+    #[test]
+    fn load_or_create_rejects_invalid_local_ae_title() {
+        let root = tempdir().expect("create temp dir");
+        let paths = temp_paths(&root);
+        paths.ensure().expect("create temp paths");
+        fs::write(
+            &paths.config_json,
+            concat!(
+                "{\n",
+                "  \"local_ae_title\": \"DICOMNODECLIENT\",\n",
+                "  \"storage_bind_addr\": \"0.0.0.0\",\n",
+                "  \"storage_scp_port\": 11112,\n",
+                "  \"max_pdu_length\": 262138,\n",
+                "  \"strict_pdu\": true,\n",
+                "  \"allow_promiscuous_storage\": false,\n",
+                "  \"local_aes\": [\n",
+                "    {\n",
+                "      \"title\": \"bad_ae\",\n",
+                "      \"bind_addr\": \"127.0.0.1:11112\",\n",
+                "      \"services\": [\"verification\"],\n",
+                "      \"max_concurrent_associations\": 1\n",
+                "    }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("write config with invalid local AE");
+
+        let err = AppConfig::load_or_create(&paths).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("validating config"));
+        assert!(msg.contains("AE title"));
+    }
+
+    #[test]
+    fn load_or_create_rejects_unknown_local_ae_service() {
+        let root = tempdir().expect("create temp dir");
+        let paths = temp_paths(&root);
+        paths.ensure().expect("create temp paths");
+        fs::write(
+            &paths.config_json,
+            concat!(
+                "{\n",
+                "  \"local_ae_title\": \"DICOMNODECLIENT\",\n",
+                "  \"storage_bind_addr\": \"0.0.0.0\",\n",
+                "  \"storage_scp_port\": 11112,\n",
+                "  \"max_pdu_length\": 262138,\n",
+                "  \"strict_pdu\": true,\n",
+                "  \"allow_promiscuous_storage\": false,\n",
+                "  \"local_aes\": [\n",
+                "    {\n",
+                "      \"title\": \"LOCALSTORE\",\n",
+                "      \"bind_addr\": \"127.0.0.1:11112\",\n",
+                "      \"services\": [\"storage\", \"not_a_service\"],\n",
+                "      \"max_concurrent_associations\": 1\n",
+                "    }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("write config with unknown service");
+
+        let err = AppConfig::load_or_create(&paths).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("not_a_service"));
+    }
+
+    #[test]
+    fn load_or_create_rejects_duplicate_nonzero_local_ae_ports() {
+        let root = tempdir().expect("create temp dir");
+        let paths = temp_paths(&root);
+        paths.ensure().expect("create temp paths");
+        fs::write(
+            &paths.config_json,
+            concat!(
+                "{\n",
+                "  \"local_ae_title\": \"DICOMNODECLIENT\",\n",
+                "  \"storage_bind_addr\": \"0.0.0.0\",\n",
+                "  \"storage_scp_port\": 11112,\n",
+                "  \"max_pdu_length\": 262138,\n",
+                "  \"strict_pdu\": true,\n",
+                "  \"allow_promiscuous_storage\": false,\n",
+                "  \"local_aes\": [\n",
+                "    {\n",
+                "      \"title\": \"LOCALONE\",\n",
+                "      \"bind_addr\": \"127.0.0.1:11112\",\n",
+                "      \"services\": [\"verification\"],\n",
+                "      \"max_concurrent_associations\": 1\n",
+                "    },\n",
+                "    {\n",
+                "      \"title\": \"LOCALTWO\",\n",
+                "      \"bind_addr\": \"127.0.0.1:11112\",\n",
+                "      \"services\": [\"verification\"],\n",
+                "      \"max_concurrent_associations\": 2\n",
+                "    }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("write config with duplicate ports");
+
+        let err = AppConfig::load_or_create(&paths).unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("duplicate local AE bind port"));
+    }
+
+    #[test]
+    fn load_or_create_preserves_independent_local_ae_limits() {
+        let root = tempdir().expect("create temp dir");
+        let paths = temp_paths(&root);
+        paths.ensure().expect("create temp paths");
+        fs::write(
+            &paths.config_json,
+            concat!(
+                "{\n",
+                "  \"local_ae_title\": \"DICOMNODECLIENT\",\n",
+                "  \"storage_bind_addr\": \"0.0.0.0\",\n",
+                "  \"storage_scp_port\": 11112,\n",
+                "  \"max_pdu_length\": 262138,\n",
+                "  \"strict_pdu\": true,\n",
+                "  \"allow_promiscuous_storage\": false,\n",
+                "  \"local_aes\": [\n",
+                "    {\n",
+                "      \"title\": \"LOCALSTORE\",\n",
+                "      \"bind_addr\": \"127.0.0.1:0\",\n",
+                "      \"services\": [\"verification\", \"storage\"],\n",
+                "      \"max_concurrent_associations\": 1\n",
+                "    },\n",
+                "    {\n",
+                "      \"title\": \"LOCALQR\",\n",
+                "      \"bind_addr\": \"127.0.0.1:0\",\n",
+                "      \"services\": [\"verification\", \"query\", \"retrieve\"],\n",
+                "      \"max_concurrent_associations\": 2\n",
+                "    }\n",
+                "  ]\n",
+                "}\n"
+            ),
+        )
+        .expect("write multi-AE config");
+
+        let cfg = AppConfig::load_or_create(&paths).expect("load multi-AE config");
+        assert_eq!(cfg.local_aes.len(), 2);
+        assert_eq!(cfg.local_aes[0].max_concurrent_associations, 1);
+        assert_eq!(cfg.local_aes[1].max_concurrent_associations, 2);
     }
 }

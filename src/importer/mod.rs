@@ -1,5 +1,5 @@
 mod persistence;
-mod staging;
+pub(crate) mod staging;
 mod traversal;
 
 use std::{fs, path::Path, sync::atomic::AtomicBool};
@@ -263,7 +263,7 @@ impl Importer {
 }
 
 #[cfg(test)]
-mod test_support {
+pub(crate) mod test_support {
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_dictionary_std::{
         tags,
@@ -357,7 +357,7 @@ mod test_support {
         fs::read(path).expect("read test DICOM")
     }
 
-    pub(super) fn write_valid_dicom_with_pixel_data(path: &Path, sop_instance_uid: &str) {
+    pub(crate) fn write_valid_dicom_with_pixel_data(path: &Path, sop_instance_uid: &str) {
         let obj = InMemDicomObject::from_element_iter([
             DataElement::new(
                 tags::PATIENT_NAME,

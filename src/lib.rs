@@ -1,4 +1,5 @@
 pub mod aliases;
+pub mod archive;
 pub mod cancel;
 pub mod cli;
 pub mod config;

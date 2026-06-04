@@ -3,7 +3,7 @@ mod common;
 use std::{path::PathBuf, time::Duration};
 
 use dicom_dictionary_std::uids::{EXPLICIT_VR_LITTLE_ENDIAN, IMPLICIT_VR_LITTLE_ENDIAN};
-use dicom_node_client::dicom::managed_file_path;
+use dicom_node_client::{dicom::managed_file_path, net::transfer::STORAGE_ABSTRACT_SYNTAXES};
 use rusqlite::Connection;
 
 use common::{
@@ -75,6 +75,63 @@ fn c_store_scu_sends_files_and_negotiates_uncompressed_transfer_syntaxes() {
 }
 
 #[test]
+fn storage_scp_promiscuous_mode_stores_private_sop_class() {
+    run_with_timeout(Duration::from_secs(10), || {
+        let services = TestServices::new_with_config(|config| {
+            config.allow_promiscuous_storage = true;
+            config.allowed_calling_aet = vec![];
+            config.allowed_peer_ips = vec![];
+        })
+        .expect("create test services");
+        let storage_scp = services
+            .services
+            .storage_scp
+            .spawn_background()
+            .expect("spawn storage scp");
+        let node = remote_node_fixture(
+            "storage-scp",
+            &services.services.config.local_ae_title,
+            storage_scp.port(),
+        );
+        let study_uid = "1.2.826.0.1.3680043.10.201.90";
+        let series_uid = "1.2.826.0.1.3680043.10.201.90.1";
+        let sop_uid = "1.2.826.0.1.3680043.10.201.90.1.1";
+        let private_sop_class_uid = "1.2.826.0.1.3680043.10.201.90.999";
+        assert!(!STORAGE_ABSTRACT_SYNTAXES
+            .iter()
+            .any(|syntax| *syntax == private_sop_class_uid));
+
+        let mut spec = TestDicomSpec::new(study_uid, series_uid, sop_uid);
+        spec.sop_class_uid = private_sop_class_uid.to_string();
+        spec.rows = 1;
+        spec.columns = 1;
+        let input_path = services.temp_dir.path().join("private-sop.dcm");
+        let input =
+            write_valid_dicom_with_pixel_data(&input_path, &spec).expect("write private DICOM");
+
+        let outcome = services
+            .services
+            .store_scu
+            .send_files(&node, &[input.path])
+            .expect("send private SOP file");
+        let report = storage_scp.stop().expect("stop storage scp");
+        let metrics = services.services.storage_scp.metrics_snapshot();
+
+        assert_eq!(outcome.attempted, 1);
+        assert_eq!(outcome.sent, 1);
+        assert_eq!(outcome.failed, 0);
+        assert!(outcome.failures.is_empty());
+        assert_eq!(report.received, 1);
+        assert_eq!(report.stored, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(metrics.c_store_received_total, 1);
+        assert_eq!(metrics.c_store_stored_total, 1);
+        assert_eq!(metrics.c_store_failed_total, 0);
+        assert_eq!(database_instance_count(&services, sop_uid), 1);
+    });
+}
+
+#[test]
 fn storage_scp_rejects_inbound_dataset_over_configured_limit_without_artifacts() {
     run_with_timeout(Duration::from_secs(10), || {
         let services = TestServices::new_with_config(|config| {
@@ -118,6 +175,7 @@ fn storage_scp_rejects_inbound_dataset_over_configured_limit_without_artifacts()
             .send_files(&node, &[input.path])
             .expect("send oversized file");
         let report = storage_scp.stop().expect("stop storage scp");
+        let metrics = services.services.storage_scp.metrics_snapshot();
 
         assert_eq!(outcome.attempted, 1);
         // The SCU reports the send as successful only when the remote returns a
@@ -131,6 +189,9 @@ fn storage_scp_rejects_inbound_dataset_over_configured_limit_without_artifacts()
         // due to size limits.
         assert_eq!(report.stored, 0);
         assert_eq!(report.failed, 1);
+        assert_eq!(metrics.c_store_received_total, 1);
+        assert_eq!(metrics.c_store_stored_total, 0);
+        assert_eq!(metrics.c_store_failed_total, 1);
         assert!(!managed_file_path(
             &services.services.paths.managed_store_dir,
             study_uid,
@@ -343,6 +404,7 @@ fn storage_scp_stores_inbound_dataset_under_configured_limit() {
             .send_files(&node, &[input.path])
             .expect("send small file");
         let report = storage_scp.stop().expect("stop storage scp");
+        let metrics = services.services.storage_scp.metrics_snapshot();
         let managed_path = managed_file_path(
             &services.services.paths.managed_store_dir,
             study_uid,
@@ -356,6 +418,12 @@ fn storage_scp_stores_inbound_dataset_under_configured_limit() {
         assert_eq!(report.received, 1);
         assert_eq!(report.stored, 1);
         assert_eq!(report.failed, 0);
+        assert_eq!(metrics.server_associations_accepted_total, 1);
+        assert_eq!(metrics.server_associations_rejected_total, 0);
+        assert_eq!(metrics.c_store_received_total, 1);
+        assert_eq!(metrics.c_store_stored_total, 1);
+        assert_eq!(metrics.c_store_failed_total, 0);
+        assert!(metrics.archive_ingest_bytes_total > 0);
         assert!(managed_path.exists());
         assert_eq!(database_instance_count(&services, sop_uid), 1);
     });

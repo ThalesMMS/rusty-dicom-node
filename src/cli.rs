@@ -43,6 +43,15 @@ pub enum Commands {
         #[command(subcommand)]
         command: LocalCommand,
     },
+    Serve {
+        /// Output a final operation summary as JSON (stable schema).
+        #[arg(long)]
+        json: bool,
+
+        /// Print the final in-memory server metrics snapshot as JSON when the server exits.
+        #[arg(long)]
+        metrics_json: bool,
+    },
     StorageScp {
         /// Output a final operation summary as JSON (stable schema).
         #[arg(long)]

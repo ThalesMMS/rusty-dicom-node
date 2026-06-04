@@ -6,6 +6,7 @@ use dicom_dictionary_std::tags;
 pub enum Operation {
     CEcho,
     CFind,
+    CGet,
     CMove,
     CStore,
 }

@@ -120,6 +120,23 @@ pub fn interpret_status(operation: Operation, code: u16) -> Option<StatusInfo> {
             }),
             _ => None,
         },
+        Operation::CGet => match code {
+            0xFF00 => Some(StatusInfo {
+                code,
+                category: StatusCategory::Pending,
+                meaning: "Pending: sub-operations are continuing",
+                terminal: false,
+                hint: None,
+            }),
+            0xFF01 => Some(StatusInfo {
+                code,
+                category: StatusCategory::Pending,
+                meaning: "Pending: sub-operations are continuing (warning)",
+                terminal: false,
+                hint: None,
+            }),
+            _ => None,
+        },
         Operation::CStore => match code {
             // Note: C-STORE has no `Pending` status; common success/warning/failure handled above.
             _ => None,

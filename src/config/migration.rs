@@ -424,6 +424,7 @@ mod tests {
             sha256: "sha256".to_string(),
             source_path: "/source/file.dcm".to_string(),
             managed_path: managed_path.to_string_lossy().to_string(),
+            attributes_json: None,
             imported_at: "2026-04-14T00:00:00Z".to_string(),
         }
     }
