@@ -1,87 +1,61 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { MouseEvent } from "react";
+import {
+  Activity,
+  Database,
+  Download,
+  FileText,
+  HardDriveDownload,
+  LayoutDashboard,
+  Network,
+  RefreshCw,
+  Search,
+  Server as ServerIcon,
+  Upload,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getStatus } from "./api";
-import type { Status } from "./types";
+import type { ActivityEntry, Status } from "./types";
 import Dashboard from "./views/Dashboard";
 import Query from "./views/Query";
 import Archive from "./views/Archive";
 import Nodes from "./views/Nodes";
 import ImportView from "./views/Import";
 import Server from "./views/Server";
+import Logs from "./views/Logs";
 
-type View = "dashboard" | "query" | "archive" | "nodes" | "import" | "server";
+type View = "dashboard" | "query" | "archive" | "nodes" | "import" | "server" | "logs";
 
-const NAV: { id: View; label: string; icon: JSX.Element }[] = [
-  {
-    id: "dashboard",
-    label: "Dashboard",
-    icon: (
-      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="3" y="3" width="7" height="9" rx="1.5" />
-        <rect x="14" y="3" width="7" height="5" rx="1.5" />
-        <rect x="14" y="12" width="7" height="9" rx="1.5" />
-        <rect x="3" y="16" width="7" height="5" rx="1.5" />
-      </svg>
-    ),
-  },
-  {
-    id: "query",
-    label: "Query / Retrieve",
-    icon: (
-      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <circle cx="11" cy="11" r="7" />
-        <path d="m21 21-4.3-4.3" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: "archive",
-    label: "Local Archive",
-    icon: (
-      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <ellipse cx="12" cy="5" rx="8" ry="3" />
-        <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-        <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
-      </svg>
-    ),
-  },
-  {
-    id: "nodes",
-    label: "Remote Nodes",
-    icon: (
-      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <circle cx="5" cy="12" r="2.5" />
-        <circle cx="19" cy="5" r="2.5" />
-        <circle cx="19" cy="19" r="2.5" />
-        <path d="M7.3 10.8 16.7 6.2M7.3 13.2l9.4 4.6" />
-      </svg>
-    ),
-  },
-  {
-    id: "import",
-    label: "Import",
-    icon: (
-      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M12 3v12m0 0 4-4m-4 4-4-4" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: "server",
-    label: "Storage Server",
-    icon: (
-      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <rect x="3" y="4" width="18" height="7" rx="1.5" />
-        <rect x="3" y="13" width="18" height="7" rx="1.5" />
-        <path d="M7 7.5h.01M7 16.5h.01" strokeLinecap="round" />
-      </svg>
-    ),
-  },
+type ActivityInput = Omit<ActivityEntry, "id" | "at">;
+
+const NAV: { id: View; label: string; icon: LucideIcon }[] = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "query", label: "Query / Retrieve", icon: Search },
+  { id: "archive", label: "Local Archive", icon: Database },
+  { id: "import", label: "Import", icon: HardDriveDownload },
+  { id: "nodes", label: "Remote Nodes", icon: Network },
+  { id: "server", label: "Storage Server", icon: ServerIcon },
+  { id: "logs", label: "Logs", icon: FileText },
 ];
 
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
   const [status, setStatus] = useState<Status | null>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+
+  const addActivity = (entry: ActivityInput) => {
+    setActivity((prev) => [
+      {
+        ...entry,
+        id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        at: new Date().toISOString(),
+      },
+      ...prev,
+    ].slice(0, 50));
+  };
 
   const refreshStatus = () => {
     getStatus().then(setStatus).catch(console.error);
@@ -93,9 +67,27 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  const networkNav = useMemo(() => new Set<View>(["nodes", "server", "logs"]), []);
+
+  const revealLog = () => {
+    if (status?.active_log_file) {
+      revealItemInDir(status.active_log_file).catch(console.error);
+    }
+  };
+
+  const startWindowDrag = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0 || event.detail !== 1) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, input, select, textarea, a, label, summary")) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    getCurrentWindow().startDragging().catch(console.error);
+  };
+
   return (
     <div className="app">
-      <div className="titlebar" data-tauri-drag-region />
+      <div className="titlebar" data-tauri-drag-region onMouseDown={startWindowDrag} />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">Dx</div>
@@ -105,28 +97,12 @@ export default function App() {
           </div>
         </div>
         <nav className="nav">
-          {NAV.filter((i) => ["dashboard", "query", "archive", "import"].includes(i.id)).map(
-            (item) => (
-              <button
-                key={item.id}
-                className={`nav-item${view === item.id ? " active" : ""}`}
-                onClick={() => setView(item.id)}
-              >
-                {item.icon}
-                {item.label}
-              </button>
-            ),
-          )}
+          {NAV.filter((item) => !networkNav.has(item.id)).map((item) => (
+            <NavButton key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)} />
+          ))}
           <div className="nav-label">Network</div>
-          {NAV.filter((i) => ["nodes", "server"].includes(i.id)).map((item) => (
-            <button
-              key={item.id}
-              className={`nav-item${view === item.id ? " active" : ""}`}
-              onClick={() => setView(item.id)}
-            >
-              {item.icon}
-              {item.label}
-            </button>
+          {NAV.filter((item) => networkNav.has(item.id)).map((item) => (
+            <NavButton key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)} />
           ))}
         </nav>
         <div className="sidebar-footer">
@@ -138,17 +114,107 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
-        <div className="page">
-          <div className="view-anim" key={view}>
-            {view === "dashboard" && <Dashboard status={status} onNavigate={(v) => setView(v as View)} />}
-            {view === "query" && <Query />}
-            {view === "archive" && <Archive />}
-            {view === "nodes" && <Nodes />}
-            {view === "import" && <ImportView />}
-            {view === "server" && <Server status={status} onStatusChange={refreshStatus} />}
+        <header className="operator-strip" onMouseDown={startWindowDrag}>
+          <div className="operator-status">
+            <span className={`status-dot${status?.server_running ? " on" : ""}`} />
+            <strong>{status?.local_ae_title ?? "Loading"}</strong>
+            <span>{status?.listener_addr ?? "…"}</span>
+            <span className="strip-muted">PDU {status?.max_pdu_length ?? "…"}</span>
           </div>
+          <div className="strip-drag-spacer" data-tauri-drag-region />
+          <div className="operator-actions">
+            <button className="icon-btn" title="Refresh status" onClick={refreshStatus}>
+              <RefreshCw size={16} />
+            </button>
+            <button className="icon-btn" title="Reveal log file" onClick={revealLog} disabled={!status?.active_log_file}>
+              <FileText size={16} />
+            </button>
+            <button className="btn sm" onClick={() => setView("query")}>
+              <Search size={15} />
+              Query
+            </button>
+            <button className="btn sm" onClick={() => setView("import")}>
+              <Download size={15} />
+              Import
+            </button>
+            <button className="btn sm" onClick={() => setView("archive")}>
+              <Upload size={15} />
+              Send
+            </button>
+            <button className="btn sm" onClick={() => setActivityOpen((open) => !open)}>
+              <Activity size={15} />
+              Activity {activity.length > 0 ? activity.length : ""}
+            </button>
+          </div>
+        </header>
+        <div className="content-shell">
+          <section className="page">
+            <div className="view-anim" key={view}>
+              {view === "dashboard" && (
+                <Dashboard status={status} onNavigate={(v) => setView(v as View)} />
+              )}
+              {view === "query" && <Query onActivity={addActivity} />}
+              {view === "archive" && <Archive onActivity={addActivity} />}
+              {view === "nodes" && <Nodes />}
+              {view === "import" && <ImportView onActivity={addActivity} />}
+              {view === "server" && (
+                <Server
+                  status={status}
+                  onStatusChange={refreshStatus}
+                  onNavigate={(v) => setView(v as View)}
+                  onActivity={addActivity}
+                />
+              )}
+              {view === "logs" && <Logs status={status} onActivity={addActivity} />}
+            </div>
+          </section>
+          {activityOpen && <ActivityPanel entries={activity} />}
         </div>
       </main>
     </div>
+  );
+}
+
+function NavButton({
+  item,
+  active,
+  onClick,
+}: {
+  item: (typeof NAV)[number];
+  active: boolean;
+  onClick: () => void;
+}) {
+  const Icon = item.icon;
+  return (
+    <button className={`nav-item${active ? " active" : ""}`} onClick={onClick}>
+      <Icon size={17} />
+      {item.label}
+    </button>
+  );
+}
+
+function ActivityPanel({ entries }: { entries: ActivityEntry[] }) {
+  return (
+    <aside className="activity-panel">
+      <div className="panel-heading">
+        <Activity size={16} />
+        <h2>Activity</h2>
+      </div>
+      {entries.length === 0 ? (
+        <div className="empty small">No session activity yet.</div>
+      ) : (
+        <div className="activity-list">
+          {entries.map((entry) => (
+            <div key={entry.id} className={`activity-item ${entry.tone ?? "info"}`}>
+              <div className="activity-time">{new Date(entry.at).toLocaleTimeString()}</div>
+              <div>
+                <div className="activity-title">{entry.title}</div>
+                {entry.detail && <div className="activity-detail">{entry.detail}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </aside>
   );
 }

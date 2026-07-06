@@ -2,6 +2,8 @@
 
 export type QueryModel = "PatientRoot" | "StudyRoot";
 export type QueryLevel = "Patient" | "Study" | "Series" | "Image";
+export type ArchiveExportScope = "studies" | "series";
+export type ArchiveExportFormat = "json" | "csv";
 
 export interface RemoteNode {
   id: string;
@@ -151,6 +153,7 @@ export interface Status {
   config_path: string;
   data_dir: string;
   log_dir: string;
+  active_log_file: string;
   server_running: boolean;
 }
 
@@ -167,4 +170,27 @@ export interface ServerMetrics {
   c_move_suboperations_failed_total: number;
   c_get_requests_total: number;
   archive_ingest_bytes_total: number;
+}
+
+export interface LogTailResult {
+  path: string;
+  exists: boolean;
+  lines: string[];
+  truncated: boolean;
+}
+
+export interface ArchiveExportResult {
+  path: string;
+  rows: number;
+  scope: ArchiveExportScope;
+  format: ArchiveExportFormat;
+}
+
+export interface ActivityEntry {
+  id: string;
+  at: string;
+  kind: "query" | "retrieve" | "import" | "send" | "export" | "server" | "log";
+  title: string;
+  detail?: string;
+  tone?: "info" | "success" | "warning" | "error";
 }

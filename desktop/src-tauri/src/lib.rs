@@ -1,6 +1,8 @@
 use std::{
-    collections::HashMap,
-    path::PathBuf,
+    collections::{HashMap, VecDeque},
+    fs,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -9,10 +11,12 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State};
 
 use dicom_node_client::{
+    cli::LocalExportFormat,
     config::AppPaths,
+    export::{export_series, export_studies},
     models::{
         ImportReport, LocalInstance, MoveOutcome, MoveRequest, QueryCriteria, QueryMatch,
         RemoteNode, RemoteNodeDraft, RemoteNodePatch, ScpSessionReport, SendOutcome,
@@ -21,8 +25,11 @@ use dicom_node_client::{
     net::ServerMetricsSnapshot,
     services::{AppServices, TuiReceiverMode},
 };
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 type CmdResult<T> = Result<T, String>;
+const DEFAULT_LOG_TAIL_LINES: usize = 200;
+const MAX_LOG_TAIL_LINES: usize = 1000;
 
 fn err_str(err: anyhow::Error) -> String {
     format!("{err:#}")
@@ -81,6 +88,7 @@ struct StatusDto {
     config_path: String,
     data_dir: String,
     log_dir: String,
+    active_log_file: String,
     server_running: bool,
 }
 
@@ -99,6 +107,119 @@ struct ImportProgress {
     task_id: String,
     processed: u64,
     total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ArchiveExportScope {
+    Studies,
+    Series,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ArchiveExportFormat {
+    Json,
+    Csv,
+}
+
+impl ArchiveExportFormat {
+    fn as_cli(self) -> LocalExportFormat {
+        match self {
+            Self::Json => LocalExportFormat::Json,
+            Self::Csv => LocalExportFormat::Csv,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ArchiveExportResult {
+    path: String,
+    rows: usize,
+    scope: ArchiveExportScope,
+    format: ArchiveExportFormat,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LogTailResult {
+    path: String,
+    exists: bool,
+    lines: Vec<String>,
+    truncated: bool,
+}
+
+fn normalized_tail_limit(max_lines: Option<usize>) -> usize {
+    max_lines
+        .unwrap_or(DEFAULT_LOG_TAIL_LINES)
+        .clamp(1, MAX_LOG_TAIL_LINES)
+}
+
+fn tail_log_file(path: &Path, max_lines: Option<usize>) -> anyhow::Result<LogTailResult> {
+    let limit = normalized_tail_limit(max_lines);
+    if !path.exists() {
+        return Ok(LogTailResult {
+            path: path.display().to_string(),
+            exists: false,
+            lines: Vec::new(),
+            truncated: false,
+        });
+    }
+
+    let file = fs::File::open(path)
+        .map_err(|e| anyhow::anyhow!("opening log file {}: {e}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut lines = VecDeque::with_capacity(limit);
+    let mut truncated = false;
+    for line in reader.lines() {
+        lines.push_back(line?);
+        if lines.len() > limit {
+            lines.pop_front();
+            truncated = true;
+        }
+    }
+
+    Ok(LogTailResult {
+        path: path.display().to_string(),
+        exists: true,
+        lines: lines.into_iter().collect(),
+        truncated,
+    })
+}
+
+fn export_archive_to_path(
+    services: &AppServices,
+    scope: ArchiveExportScope,
+    format: ArchiveExportFormat,
+    out_path: &Path,
+    study_instance_uid: Option<&str>,
+) -> anyhow::Result<ArchiveExportResult> {
+    match scope {
+        ArchiveExportScope::Studies => {
+            let studies = services.local_studies()?;
+            let rows = studies.len();
+            export_studies(format.as_cli(), &studies, Some(out_path))?;
+            Ok(ArchiveExportResult {
+                path: out_path.display().to_string(),
+                rows,
+                scope,
+                format,
+            })
+        }
+        ArchiveExportScope::Series => {
+            let study_uid = study_instance_uid
+                .filter(|uid| !uid.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("study_instance_uid is required for series export"))?;
+            let series = services.local_series(study_uid)?;
+            let rows = series.len();
+            export_series(format.as_cli(), &series, Some(out_path))?;
+            Ok(ArchiveExportResult {
+                path: out_path.display().to_string(),
+                rows,
+                scope,
+                format,
+            })
+        }
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -122,6 +243,7 @@ fn get_status(state: State<'_, Arc<AppState>>) -> CmdResult<StatusDto> {
         config_path: snapshot.config_path,
         data_dir: snapshot.data_dir,
         log_dir: snapshot.log_dir,
+        active_log_file: state.services.paths.active_log_file.display().to_string(),
         server_running,
     })
 }
@@ -278,6 +400,36 @@ fn local_instances(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+fn tail_log(
+    state: State<'_, Arc<AppState>>,
+    max_lines: Option<usize>,
+) -> CmdResult<LogTailResult> {
+    tail_log_file(&state.services.paths.active_log_file, max_lines).map_err(err_str)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn export_local_archive(
+    state: State<'_, Arc<AppState>>,
+    scope: ArchiveExportScope,
+    format: ArchiveExportFormat,
+    out_path: String,
+    study_instance_uid: Option<String>,
+) -> CmdResult<ArchiveExportResult> {
+    let out_path = PathBuf::from(out_path.trim());
+    if out_path.as_os_str().is_empty() {
+        return Err("out_path is required".into());
+    }
+    export_archive_to_path(
+        &state.services,
+        scope,
+        format,
+        &out_path,
+        study_instance_uid.as_deref(),
+    )
+    .map_err(err_str)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn cancel_task(state: State<'_, Arc<AppState>>, task_id: String) -> CmdResult<bool> {
     let tasks = state.tasks.lock().unwrap();
     match tasks.get(&task_id) {
@@ -321,16 +473,27 @@ async fn stop_server(state: State<'_, Arc<AppState>>) -> CmdResult<Option<ScpSes
     report.map(Some).map_err(err_str)
 }
 
+fn init_tracing(logs_dir: &Path) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
+    fs::create_dir_all(logs_dir)
+        .map_err(|e| anyhow::anyhow!("creating log directory {}: {e}", logs_dir.display()))?;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let file_appender = tracing_appender::rolling::never(logs_dir, "app.log");
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+    let console_layer = fmt::layer().with_writer(std::io::stderr);
+    let file_layer = fmt::layer().with_writer(file_writer).with_ansi(false);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(console_layer)
+        .with(file_layer)
+        .try_init()
+        .map_err(|err| anyhow::anyhow!("initializing tracing subscriber: {err}"))?;
+    Ok(guard)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
     let paths = AppPaths::discover().expect("failed to discover app paths");
+    let _tracing_guard = init_tracing(&paths.logs_dir).expect("failed to initialize logging");
     let services = AppServices::load_from_paths(paths).expect("failed to initialize services");
     let state = Arc::new(AppState {
         services,
@@ -342,6 +505,36 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(state.clone())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let monitor = match window.current_monitor() {
+                    Ok(Some(monitor)) => Some(monitor),
+                    Ok(None) => window.primary_monitor().ok().flatten(),
+                    Err(err) => {
+                        eprintln!("could not determine current monitor: {err}");
+                        window.primary_monitor().ok().flatten()
+                    }
+                };
+                if let Some(monitor) = monitor {
+                    let work_area = monitor.work_area();
+                    if work_area.size.width > 0 && work_area.size.height > 0 {
+                        if let Err(err) = window.set_position(PhysicalPosition::new(
+                            work_area.position.x,
+                            work_area.position.y,
+                        )) {
+                            eprintln!("could not position main window: {err}");
+                        }
+                        if let Err(err) = window.set_size(PhysicalSize::new(
+                            work_area.size.width,
+                            work_area.size.height,
+                        )) {
+                            eprintln!("could not size main window: {err}");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
         .on_window_event(move |_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 // Stop the storage server and cancel outstanding tasks on exit.
@@ -368,10 +561,107 @@ pub fn run() {
             local_studies,
             local_series,
             local_instances,
+            tail_log,
+            export_local_archive,
             cancel_task,
             start_server,
             stop_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        export_archive_to_path, normalized_tail_limit, tail_log_file, ArchiveExportFormat,
+        ArchiveExportScope,
+    };
+    use dicom_node_client::{config::AppPaths, services::AppServices};
+
+    fn temp_services() -> (tempfile::TempDir, AppServices) {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let base_dir = temp_dir.path().join("app");
+        let paths = AppPaths {
+            base_dir: base_dir.clone(),
+            config_json: base_dir.join("config.json"),
+            sqlite_db: base_dir.join("rusty-dicom-node.sqlite3"),
+            managed_store_dir: base_dir.join("store"),
+            logs_dir: base_dir.join("logs"),
+            active_log_file: base_dir.join("logs").join("app.log"),
+        };
+        let services = AppServices::load_from_paths(paths).expect("load services");
+        (temp_dir, services)
+    }
+
+    #[test]
+    fn log_tail_reports_missing_file_without_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("missing.log");
+        let result = tail_log_file(&path, Some(20)).expect("tail missing log");
+        assert!(!result.exists);
+        assert!(result.lines.is_empty());
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn log_tail_reads_short_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "one\ntwo\nthree\n").expect("write log");
+        let result = tail_log_file(&path, Some(10)).expect("tail log");
+        assert!(result.exists);
+        assert_eq!(result.lines, vec!["one", "two", "three"]);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn log_tail_truncates_to_requested_limit() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").expect("write log");
+        let result = tail_log_file(&path, Some(2)).expect("tail log");
+        assert_eq!(result.lines, vec!["three", "four"]);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn log_tail_caps_max_lines() {
+        assert_eq!(normalized_tail_limit(Some(usize::MAX)), 1000);
+        assert_eq!(normalized_tail_limit(Some(0)), 1);
+    }
+
+    #[test]
+    fn export_studies_json_writes_file_and_reports_rows() {
+        let (_temp, services) = temp_services();
+        let out = tempfile::NamedTempFile::new().expect("temp file");
+        let result = export_archive_to_path(
+            &services,
+            ArchiveExportScope::Studies,
+            ArchiveExportFormat::Json,
+            out.path(),
+            None,
+        )
+        .expect("export studies");
+
+        let raw = std::fs::read_to_string(out.path()).expect("read export");
+        let rows: serde_json::Value = serde_json::from_str(&raw).expect("valid json export");
+        assert_eq!(rows.as_array().expect("array export").len(), result.rows);
+    }
+
+    #[test]
+    fn export_series_csv_requires_study_uid() {
+        let (_temp, services) = temp_services();
+        let out = tempfile::NamedTempFile::new().expect("temp file");
+        let err = export_archive_to_path(
+            &services,
+            ArchiveExportScope::Series,
+            ArchiveExportFormat::Csv,
+            out.path(),
+            None,
+        )
+        .expect_err("series export requires a study");
+
+        assert!(err.to_string().contains("study_instance_uid is required"));
+    }
 }

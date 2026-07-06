@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ArchiveExportFormat,
+  ArchiveExportResult,
+  ArchiveExportScope,
   ImportProgress,
   ImportReport,
   LocalInstance,
+  LogTailResult,
   MoveOutcome,
   MoveRequest,
   NodeDraft,
@@ -58,6 +62,22 @@ export const localSeries = (studyUid: string) =>
   invoke<SeriesSummary[]>("local_series", { study_instance_uid: studyUid });
 export const localInstances = (seriesUid: string) =>
   invoke<LocalInstance[]>("local_instances", { series_instance_uid: seriesUid });
+
+export const tailLog = (maxLines = 200) =>
+  invoke<LogTailResult>("tail_log", { max_lines: maxLines });
+
+export const exportLocalArchive = (
+  scope: ArchiveExportScope,
+  format: ArchiveExportFormat,
+  outPath: string,
+  studyInstanceUid?: string | null,
+) =>
+  invoke<ArchiveExportResult>("export_local_archive", {
+    scope,
+    format,
+    out_path: outPath,
+    study_instance_uid: studyInstanceUid ?? null,
+  });
 
 export const cancelTask = (taskId: string) =>
   invoke<boolean>("cancel_task", { task_id: taskId });

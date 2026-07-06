@@ -29,6 +29,7 @@ impl TestServices {
             active_log_file: base_dir.join("logs").join("app.log"),
         };
         paths.ensure()?;
+        std::fs::write(base_dir.join(".legacy-migration-complete"), b"test")?;
 
         let mut config = AppConfig {
             local_ae_title: "LOCALTEST".to_string(),
