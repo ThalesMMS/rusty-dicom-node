@@ -1,6 +1,14 @@
 use super::*;
 use crate::models::validate_ae_title;
 
+fn ferr(key: &str) -> anyhow::Error {
+    anyhow!(tr(key))
+}
+
+fn ferr1(key: &str, name: &str, value: impl ToString) -> anyhow::Error {
+    anyhow!(tr1(key, name, value))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NodeFormMode {
     Add,
@@ -95,10 +103,10 @@ impl NodeFormState {
         }
     }
 
-    pub(super) fn title(&self) -> &'static str {
+    pub(super) fn title(&self) -> String {
         match self.mode {
-            NodeFormMode::Add => "Add Remote Node",
-            NodeFormMode::Edit => "Edit Remote Node",
+            NodeFormMode::Add => tr("tui-form-add-remote-node"),
+            NodeFormMode::Edit => tr("tui-form-edit-remote-node"),
         }
     }
 
@@ -452,10 +460,10 @@ impl SendFormState {
         }
     }
 
-    pub(super) fn title(&self) -> &'static str {
+    pub(super) fn title(&self) -> String {
         match self.kind {
-            SendKind::Study => "Send Study",
-            SendKind::Series => "Send Series",
+            SendKind::Study => tr("tui-form-send-study"),
+            SendKind::Series => tr("tui-form-send-series"),
         }
     }
 
@@ -487,13 +495,13 @@ pub(super) fn build_send_request(
 ) -> anyhow::Result<(SendKind, String, String)> {
     let uid = form.uid.trim();
     if uid.is_empty() {
-        return Err(anyhow!("UID is required"));
+        return Err(ferr("tui.form.submit-uid-required"));
     }
     validate_uid(uid)?;
 
     let destination = form.destination_node.trim();
     if destination.is_empty() {
-        return Err(anyhow!("destination node is required"));
+        return Err(ferr("tui.form.submit-dest-required"));
     }
 
     Ok((form.kind, uid.to_string(), destination.to_string()))
@@ -507,9 +515,9 @@ fn parse_optional_u64_unlimited(raw: &str, label: &str) -> anyhow::Result<Option
 
     let parsed: u64 = value
         .parse()
-        .map_err(|_| anyhow!("{label} must be a non-negative integer"))?;
+        .map_err(|_| ferr1("tui.form.submit-nonneg-int", "label", label))?;
     if parsed == 0 {
-        return Err(anyhow!("{label} must be greater than 0"));
+        return Err(ferr1("tui.form.submit-gt-zero", "label", label));
     }
 
     Ok(Some(parsed))
@@ -523,9 +531,9 @@ fn parse_optional_usize_unlimited(raw: &str, label: &str) -> anyhow::Result<Opti
 
     let parsed: usize = value
         .parse()
-        .map_err(|_| anyhow!("{label} must be a non-negative integer"))?;
+        .map_err(|_| ferr1("tui.form.submit-nonneg-int", "label", label))?;
     if parsed == 0 {
-        return Err(anyhow!("{label} must be greater than 0"));
+        return Err(ferr1("tui.form.submit-gt-zero", "label", label));
     }
 
     Ok(Some(parsed))
@@ -537,43 +545,53 @@ pub(super) fn parse_storage_scp_form(
 ) -> anyhow::Result<crate::config::AppConfig> {
     let local_ae_title = form.local_ae_title.trim().to_ascii_uppercase();
     if local_ae_title.is_empty() {
-        return Err(anyhow!("local AE title is required"));
+        return Err(ferr("tui.form.submit-local-ae-required"));
     }
     validate_ae_title(&local_ae_title)
-        .map_err(|err| anyhow!("local AE title is invalid: {err}"))?;
+        .map_err(|err| ferr1("tui.form.submit-local-ae-invalid", "err", err))?;
 
     let bind_addr = form.bind_addr.trim();
     if bind_addr.is_empty() {
-        return Err(anyhow!("bind address is required"));
+        return Err(ferr("tui.form.submit-bind-required"));
     }
 
     let port = form.port.trim();
     if port.is_empty() {
-        return Err(anyhow!("port is required"));
+        return Err(ferr("tui.form.submit-port-required"));
     }
     let storage_scp_port = parse_port(port)?;
 
     let max_pdu_length = form.max_pdu_length.trim();
     if max_pdu_length.is_empty() {
-        return Err(anyhow!("max PDU length is required"));
+        return Err(ferr("tui.form.submit-max-pdu-required"));
     }
     let max_pdu_length: u32 = max_pdu_length
         .parse()
-        .map_err(|_| anyhow!("max PDU length must be an integer"))?;
+        .map_err(|_| ferr("tui.form.submit-max-pdu-int"))?;
     if max_pdu_length == 0 {
-        return Err(anyhow!("max PDU length must be greater than 0"));
+        return Err(ferr("tui.form.submit-max-pdu-gt-zero"));
     }
 
-    let max_file_import_bytes =
-        parse_optional_u64_unlimited(&form.max_file_import_bytes, "max file import bytes")?;
-    let max_zip_entry_bytes =
-        parse_optional_u64_unlimited(&form.max_zip_entry_bytes, "max zip entry bytes")?;
-    let max_zip_total_bytes =
-        parse_optional_u64_unlimited(&form.max_zip_total_bytes, "max zip total bytes")?;
-    let max_zip_entry_count =
-        parse_optional_usize_unlimited(&form.max_zip_entry_count, "max zip entry count")?;
-    let max_store_object_bytes =
-        parse_optional_u64_unlimited(&form.max_store_object_bytes, "max store object bytes")?;
+    let max_file_import_bytes = parse_optional_u64_unlimited(
+        &form.max_file_import_bytes,
+        &tr("tui.form.field-max-file-import"),
+    )?;
+    let max_zip_entry_bytes = parse_optional_u64_unlimited(
+        &form.max_zip_entry_bytes,
+        &tr("tui.form.field-max-zip-entry"),
+    )?;
+    let max_zip_total_bytes = parse_optional_u64_unlimited(
+        &form.max_zip_total_bytes,
+        &tr("tui.form.field-max-zip-total"),
+    )?;
+    let max_zip_entry_count = parse_optional_usize_unlimited(
+        &form.max_zip_entry_count,
+        &tr("tui.form.field-max-zip-count"),
+    )?;
+    let max_store_object_bytes = parse_optional_u64_unlimited(
+        &form.max_store_object_bytes,
+        &tr("tui.form.field-max-store-object"),
+    )?;
 
     let mut next = existing.clone();
     next.local_ae_title = local_ae_title;
@@ -600,7 +618,7 @@ impl RetrieveFormState {
         local_ae_title: &str,
     ) -> anyhow::Result<Self> {
         if result.level == QueryLevel::Patient {
-            return Err(anyhow!("patient-level retrieve is not supported"));
+            return Err(ferr("tui.form.submit-patient-retrieve"));
         }
 
         let study_uid = result
@@ -608,7 +626,7 @@ impl RetrieveFormState {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("selected result does not include a study UID"))?;
+            .ok_or_else(|| ferr("tui.form.submit-no-study-uid"))?;
 
         let destination = node
             .preferred_move_destination
@@ -652,58 +670,52 @@ pub(super) struct TaskInspectState {
 }
 
 fn validate_dicom_date(value: &str) -> anyhow::Result<()> {
-    if value.len() != 8 {
-        return Err(anyhow!("expected YYYYMMDD"));
-    }
-    if !value.chars().all(|c| c.is_ascii_digit()) {
-        return Err(anyhow!("expected YYYYMMDD"));
+    if value.len() != 8 || !value.chars().all(|c| c.is_ascii_digit()) {
+        return Err(ferr("tui.form.submit-date-format"));
     }
     Ok(())
 }
 
-pub(super) fn validate_uid(value: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_uid(value: &str) -> anyhow::Result<()> {
     if value.is_empty() {
-        return Err(anyhow!("UID cannot be empty"));
+        return Err(ferr("error.uid.empty"));
     }
     if value.len() > 64 {
-        return Err(anyhow!("UID must be at most 64 characters"));
+        return Err(ferr("error.uid.too-long"));
     }
     if value.starts_with('.') || value.ends_with('.') {
-        return Err(anyhow!("UID cannot start or end with a dot"));
+        return Err(ferr("error.uid.dot-ends"));
     }
     for part in value.split('.') {
         if part.is_empty() {
-            return Err(anyhow!("UID cannot contain empty components"));
+            return Err(ferr("error.uid.empty-component"));
         }
         if part.len() > 16 {
-            return Err(anyhow!("UID component '{}' is too long", part));
+            return Err(ferr1("error.uid.component-too-long", "part", part));
         }
         if !part.chars().all(|c| c.is_ascii_digit()) {
-            return Err(anyhow!("UID component '{}' must be numeric", part));
+            return Err(ferr1("error.uid.component-numeric", "part", part));
         }
         if part.len() > 1 && part.starts_with('0') {
-            return Err(anyhow!(
-                "UID component '{}' cannot have leading zeros",
-                part
-            ));
+            return Err(ferr1("error.uid.leading-zeros", "part", part));
         }
     }
     Ok(())
 }
 
-fn validate_modality(value: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_modality(value: &str) -> anyhow::Result<()> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("modality cannot be empty"));
+        return Err(ferr("tui.form.err-modality-empty"));
     }
     if trimmed.len() > 16 {
-        return Err(anyhow!("modality must be at most 16 characters"));
+        return Err(ferr("tui.form.submit-modality-len"));
     }
     if !trimmed
         .chars()
         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
     {
-        return Err(anyhow!("modality must be A-Z or 0-9"));
+        return Err(ferr("tui.form.submit-modality-chars"));
     }
     Ok(())
 }
@@ -712,8 +724,15 @@ fn validate_modality(value: &str) -> anyhow::Result<()> {
 mod validation_tests {
     use super::{validate_dicom_date, validate_uid};
 
+    fn pin_en_us() {
+        crate::i18n::set_thread_locale(Some(
+            "en-US".parse().expect("valid BCP-47 locale"),
+        ));
+    }
+
     #[test]
     fn validate_uid_accepts_common_dicom_uids() {
+        pin_en_us();
         validate_uid("1.2.840.10008.1.2.1").expect("valid transfer syntax UID");
         validate_uid("2.25.1234567890123456")
             .expect("valid 2.25-style UID within component limits");
@@ -721,6 +740,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_empty() {
+        pin_en_us();
         assert_eq!(
             validate_uid("").unwrap_err().to_string(),
             "UID cannot be empty"
@@ -729,6 +749,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_leading_or_trailing_dot() {
+        pin_en_us();
         assert_eq!(
             validate_uid(".1.2.3").unwrap_err().to_string(),
             "UID cannot start or end with a dot"
@@ -741,6 +762,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_empty_components() {
+        pin_en_us();
         assert_eq!(
             validate_uid("1..2").unwrap_err().to_string(),
             "UID cannot contain empty components"
@@ -749,6 +771,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_non_numeric_components() {
+        pin_en_us();
         assert_eq!(
             validate_uid("1.2.a").unwrap_err().to_string(),
             "UID component 'a' must be numeric"
@@ -757,6 +780,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_leading_zeros_in_components() {
+        pin_en_us();
         assert_eq!(
             validate_uid("1.02.3").unwrap_err().to_string(),
             "UID component '02' cannot have leading zeros"
@@ -765,6 +789,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_component_length_over_16() {
+        pin_en_us();
         let too_long = "12345678901234567"; // 17
         assert_eq!(
             validate_uid(&format!("1.{too_long}.3"))
@@ -776,6 +801,7 @@ mod validation_tests {
 
     #[test]
     fn validate_uid_rejects_total_length_over_64() {
+        pin_en_us();
         let uid = "1.1234567890123456.1234567890123456.1234567890123456.1234567890123456";
         assert!(uid.len() > 64);
         assert_eq!(
@@ -786,6 +812,7 @@ mod validation_tests {
 
     #[test]
     fn validate_dicom_date_requires_yyyymmdd_digits() {
+        pin_en_us();
         validate_dicom_date("20250131").expect("valid DICOM date");
 
         assert_eq!(
@@ -819,30 +846,30 @@ pub(super) enum ModalState {
 pub(super) fn parse_node_form(form: &NodeFormState) -> anyhow::Result<NodeFormValues> {
     let name = form.name.trim();
     if name.is_empty() {
-        return Err(anyhow!("node name is required"));
+        return Err(ferr("tui.form.submit-name-required"));
     }
 
     let ae_title = form.ae_title.trim().to_ascii_uppercase();
     if ae_title.is_empty() {
-        return Err(anyhow!("AE title is required"));
+        return Err(ferr("tui.form.submit-ae-required"));
     }
     validate_ae_title(&ae_title)?;
 
     let host = form.host.trim();
     if host.is_empty() {
-        return Err(anyhow!("host is required"));
+        return Err(ferr("tui.form.submit-host-required"));
     }
 
     let port = form.port.trim();
     if port.is_empty() {
-        return Err(anyhow!("port is required"));
+        return Err(ferr("tui.form.submit-port-required"));
     }
 
     let move_destination = trim_to_option(Some(form.move_destination.clone()))
         .map(|value| value.trim().to_ascii_uppercase());
     if let Some(ref value) = move_destination {
         validate_ae_title(value)
-            .map_err(|err| anyhow!("move destination AE title is invalid: {}", err))?;
+            .map_err(|err| ferr1("tui.form.submit-move-dest-invalid", "err", err))?;
     }
 
     Ok(NodeFormValues {
@@ -899,17 +926,15 @@ pub(super) fn validate_query_form(form: &QueryFormState) -> anyhow::Result<()> {
     let date_to = trim_to_option(Some(form.date_to.clone()));
 
     if date_from.is_some() ^ date_to.is_some() {
-        return Err(anyhow!(
-            "both date from and date to must be set, or neither"
-        ));
+        return Err(ferr("tui.form.submit-dates-both"));
     }
 
     if let (Some(from), Some(to)) = (date_from.as_deref(), date_to.as_deref()) {
-        validate_dicom_date(from).map_err(|err| anyhow!("date from is invalid: {}", err))?;
-        validate_dicom_date(to).map_err(|err| anyhow!("date to is invalid: {}", err))?;
+        validate_dicom_date(from).map_err(|err| ferr1("tui.form.submit-date-from-invalid", "err", err))?;
+        validate_dicom_date(to).map_err(|err| ferr1("tui.form.submit-date-to-invalid", "err", err))?;
 
         if from > to {
-            return Err(anyhow!("date from must be on or before date to"));
+            return Err(ferr("tui.form.submit-date-order"));
         }
     }
 
@@ -923,15 +948,15 @@ pub(super) fn validate_query_form(form: &QueryFormState) -> anyhow::Result<()> {
         QueryLevel::Study => {}
         QueryLevel::Series => {
             if trim_to_option(Some(form.study_uid.clone())).is_none() {
-                return Err(anyhow!("study UID is required for series-level queries"));
+                return Err(ferr("tui.form.submit-study-uid-series-query"));
             }
         }
         QueryLevel::Image => {
             if trim_to_option(Some(form.study_uid.clone())).is_none() {
-                return Err(anyhow!("study UID is required for image-level queries"));
+                return Err(ferr("tui.form.submit-study-uid-image-query"));
             }
             if trim_to_option(Some(form.series_uid.clone())).is_none() {
-                return Err(anyhow!("series UID is required for image-level queries"));
+                return Err(ferr("tui.form.submit-series-uid-image-query"));
             }
         }
     }
@@ -941,32 +966,33 @@ pub(super) fn validate_query_form(form: &QueryFormState) -> anyhow::Result<()> {
 
 pub(super) fn build_move_request(form: &RetrieveFormState) -> anyhow::Result<MoveRequest> {
     let study_instance_uid = trim_to_option(Some(form.study_uid.clone()))
-        .ok_or_else(|| anyhow!("study UID is required"))?;
-    validate_uid(&study_instance_uid).map_err(|err| anyhow!("study UID is invalid: {}", err))?;
+        .ok_or_else(|| ferr("tui.form.submit-study-uid-required"))?;
+    validate_uid(&study_instance_uid)
+        .map_err(|err| ferr1("tui.form.submit-study-uid-invalid", "err", err))?;
 
     let input_series_instance_uid = trim_to_option(Some(form.series_uid.clone()));
     let input_sop_instance_uid = trim_to_option(Some(form.instance_uid.clone()));
 
     let (series_instance_uid, sop_instance_uid) = match form.level {
-        QueryLevel::Patient => return Err(anyhow!("patient-level retrieve is not supported")),
+        QueryLevel::Patient => return Err(ferr("tui.form.submit-patient-retrieve")),
         QueryLevel::Study => (None, None),
         QueryLevel::Series => {
             let series_instance_uid = input_series_instance_uid
-                .ok_or_else(|| anyhow!("series UID is required for series-level retrieve"))?;
+                .ok_or_else(|| ferr("tui.form.submit-series-uid-series-retrieve"))?;
             validate_uid(&series_instance_uid)
-                .map_err(|err| anyhow!("series UID is invalid: {}", err))?;
+                .map_err(|err| ferr1("tui.form.submit-series-uid-invalid", "err", err))?;
             (Some(series_instance_uid), None)
         }
         QueryLevel::Image => {
             let series_instance_uid = input_series_instance_uid
-                .ok_or_else(|| anyhow!("series UID is required for image-level retrieve"))?;
+                .ok_or_else(|| ferr("tui.form.submit-series-uid-image-retrieve"))?;
             validate_uid(&series_instance_uid)
-                .map_err(|err| anyhow!("series UID is invalid: {}", err))?;
+                .map_err(|err| ferr1("tui.form.submit-series-uid-invalid", "err", err))?;
 
             let sop_instance_uid = input_sop_instance_uid
-                .ok_or_else(|| anyhow!("instance UID is required for image-level retrieve"))?;
+                .ok_or_else(|| ferr("tui.form.submit-instance-uid-image-retrieve"))?;
             validate_uid(&sop_instance_uid)
-                .map_err(|err| anyhow!("instance UID is invalid: {}", err))?;
+                .map_err(|err| ferr1("tui.form.submit-instance-uid-invalid", "err", err))?;
 
             (Some(series_instance_uid), Some(sop_instance_uid))
         }
@@ -976,7 +1002,7 @@ pub(super) fn build_move_request(form: &RetrieveFormState) -> anyhow::Result<Mov
         .map(|value| value.trim().to_ascii_uppercase());
     if let Some(ref value) = move_destination {
         validate_ae_title(value)
-            .map_err(|err| anyhow!("move destination AE title is invalid: {}", err))?;
+            .map_err(|err| ferr1("tui.form.submit-move-dest-invalid", "err", err))?;
     }
 
     Ok(MoveRequest {
@@ -993,24 +1019,25 @@ pub(super) fn build_move_request(form: &RetrieveFormState) -> anyhow::Result<Mov
 pub(super) fn build_import_path(form: &ImportFormState) -> anyhow::Result<std::path::PathBuf> {
     let path = form.path.trim();
     if path.is_empty() {
-        return Err(anyhow!("import path is required"));
+        return Err(ferr("tui.form.submit-import-path-required"));
     }
 
     let path = std::path::PathBuf::from(path);
     let metadata = std::fs::metadata(&path)
-        .with_context(|| format!("accessing import path {}", path.display()))?;
+        .with_context(|| tr1("tui.form.submit-import-access", "path", path.display()))?;
     if !(metadata.is_file() || metadata.is_dir()) {
-        return Err(anyhow!(
-            "import path must be a file or directory: {}",
-            path.display()
+        return Err(ferr1(
+            "tui.form.submit-import-path-type",
+            "path",
+            path.display(),
         ));
     }
     if metadata.is_file() {
         std::fs::File::open(&path)
-            .with_context(|| format!("opening import file {}", path.display()))?;
+            .with_context(|| tr1("tui.form.submit-import-open", "path", path.display()))?;
     } else {
         std::fs::read_dir(&path)
-            .with_context(|| format!("reading import directory {}", path.display()))?;
+            .with_context(|| tr1("tui.form.submit-import-read-dir", "path", path.display()))?;
     }
 
     Ok(path)
@@ -1336,6 +1363,9 @@ mod tests {
 
     #[test]
     fn parse_optional_u64_unlimited_rejects_invalid_values() {
+        crate::i18n::set_thread_locale(Some(
+            "en-US".parse().expect("valid BCP-47 locale"),
+        ));
         let err = parse_optional_u64_unlimited("-1", "value")
             .unwrap_err()
             .to_string();
@@ -1376,6 +1406,9 @@ mod tests {
 
     #[test]
     fn parse_optional_usize_unlimited_rejects_invalid_values() {
+        crate::i18n::set_thread_locale(Some(
+            "en-US".parse().expect("valid BCP-47 locale"),
+        ));
         let err = parse_optional_usize_unlimited("-1", "value")
             .unwrap_err()
             .to_string();

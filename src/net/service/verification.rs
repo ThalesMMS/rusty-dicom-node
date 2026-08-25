@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use dicom_dictionary_std::{tags, uids};
 use dicom_ul::{
     association::ServerAssociation,
@@ -33,7 +33,9 @@ impl VerificationProvider {
         presentation_context_id: u8,
     ) -> Result<()> {
         let message_id = read_u16_opt_from_mem(command, tags::MESSAGE_ID)
-            .ok_or_else(|| anyhow!("missing C-ECHO message id"))?;
+            .ok_or_else(|| {
+                crate::net::err_with("error-net-missing-message-id", [("operation", "C-ECHO")])
+            })?;
         let response = create_echo_response(message_id, 0x0000);
         let response_bytes = AssociationFactory::write_command_dataset(&response)?;
         association.send(&Pdu::PData {

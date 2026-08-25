@@ -129,11 +129,15 @@ impl Importer {
         mut progress: Option<&'a mut dyn FnMut(u64, Option<u64>)>,
     ) -> Result<ImportReport> {
         cancel::ensure_not_cancelled(cancel_flag)?;
-        let file = fs::File::open(path)
-            .with_context(|| format!("opening ZIP import file {}", path.display()))?;
+        let file = fs::File::open(path).with_context(|| {
+            let path = path.display().to_string();
+            crate::error::msg_with("error-import-opening-zip-file", [("path", path.as_str())])
+        })?;
         let reader = BufReader::new(file);
-        let mut archive = ZipArchive::new(reader)
-            .with_context(|| format!("opening ZIP archive {}", path.display()))?;
+        let mut archive = ZipArchive::new(reader).with_context(|| {
+            let path = path.display().to_string();
+            crate::error::msg_with("error-import-opening-zip-archive", [("path", path.as_str())])
+        })?;
 
         let (report, managed_cleanups) = self.db.with_transaction(|conn| {
             // Track entry-path collisions within this ZIP so we never overwrite a previously-staged
@@ -150,13 +154,14 @@ impl Importer {
                 cancel::ensure_not_cancelled(cancel_flag)?;
                 if let Some(max_entries) = self.config.max_zip_entry_count {
                     if i >= max_entries {
+                        let count = archive.len().to_string();
+                        let limit = max_entries.to_string();
                         record_unreadable_with_warning(
                             &mut report,
                             path.display(),
-                            format!(
-                                "ZIP entry count limit exceeded: archive has {} entries, limit is {}",
-                                archive.len(),
-                                max_entries
+                            crate::error::msg_with(
+                                "error-import-zip-entry-count-exceeded",
+                                [("count", count.as_str()), ("limit", limit.as_str())],
                             ),
                         );
                         return Ok((report, managed_cleanups));
@@ -169,7 +174,13 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}#{}", path.display(), i),
-                            ImportRejectionReason::CorruptZip(format!("opening ZIP entry: {err}")),
+                            ImportRejectionReason::CorruptZip({
+                                let err = err.to_string();
+                                crate::error::msg_with(
+                                    "error-import-opening-zip-entry",
+                                    [("err", err.as_str())],
+                                )
+                            }),
                         );
                         continue;
                     }
@@ -189,9 +200,9 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), entry.name()),
-                            ImportRejectionReason::UnsafeZipPath(
-                                "entry path escapes archive".to_string(),
-                            ),
+                            ImportRejectionReason::UnsafeZipPath(crate::error::msg(
+                                "error-import-unsafe-zip-path",
+                            )),
                         );
                         continue;
                     }
@@ -201,10 +212,13 @@ impl Importer {
                     record_unreadable_with_warning(
                         &mut report,
                         format!("zip://{}!{}", path.display(), safe_name.display()),
-                        ImportRejectionReason::DuplicateZipPath(format!(
-                            "ZIP contains multiple entries targeting '{}'",
-                            safe_name.display()
-                        )),
+                        ImportRejectionReason::DuplicateZipPath({
+                            let path = safe_name.display().to_string();
+                            crate::error::msg_with(
+                                "error-import-duplicate-zip-path",
+                                [("path", path.as_str())],
+                            )
+                        }),
                     );
                     continue;
                 }
@@ -228,12 +242,14 @@ impl Importer {
                 let read_limit = zip_entry_read_limit(&self.config, extracted_bytes);
                 if let Some(max_entry_bytes) = self.config.max_zip_entry_bytes {
                     if entry_size > max_entry_bytes {
+                        let size = entry_size.to_string();
+                        let limit = max_entry_bytes.to_string();
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), safe_name.display()),
-                            format!(
-                                "ZIP entry size {} exceeds limit {}",
-                                entry_size, max_entry_bytes
+                            crate::error::msg_with(
+                                "error-import-zip-entry-size-exceeded",
+                                [("size", size.as_str()), ("limit", limit.as_str())],
                             ),
                         );
                         continue;
@@ -242,12 +258,19 @@ impl Importer {
                 if let Some(max_total_bytes) = self.config.max_zip_total_bytes {
                     let projected_total = extracted_bytes.saturating_add(entry_size);
                     if projected_total > max_total_bytes {
+                        let current = extracted_bytes.to_string();
+                        let entry = entry_size.to_string();
+                        let limit = max_total_bytes.to_string();
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), safe_name.display()),
-                            format!(
-                                "ZIP total extracted bytes limit exceeded: current total {} plus entry size {} exceeds limit {}",
-                                extracted_bytes, entry_size, max_total_bytes
+                            crate::error::msg_with(
+                                "error-import-zip-total-bytes-exceeded",
+                                [
+                                    ("current", current.as_str()),
+                                    ("entry", entry.as_str()),
+                                    ("limit", limit.as_str()),
+                                ],
                             ),
                         );
                         return Ok((report, managed_cleanups));
@@ -280,7 +303,13 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             format!("zip://{}!{}", path.display(), safe_name.display()),
-                            ImportRejectionReason::CorruptZip(format!("reading ZIP entry: {err}")),
+                            ImportRejectionReason::CorruptZip({
+                                let err = err.to_string();
+                                crate::error::msg_with(
+                                    "error-import-reading-zip-entry",
+                                    [("err", err.as_str())],
+                                )
+                            }),
                         );
                         continue;
                     }
@@ -328,7 +357,13 @@ impl Importer {
                         record_unreadable_with_warning(
                             &mut report,
                             source_path,
-                            ImportRejectionReason::Unreadable(format!("opening staged file: {err}")),
+                            ImportRejectionReason::Unreadable({
+                                let err = err.to_string();
+                                crate::error::msg_with(
+                                    "error-import-opening-staged-file",
+                                    [("err", err.as_str())],
+                                )
+                            }),
                         );
                         continue;
                     }
@@ -341,7 +376,13 @@ impl Importer {
                         record_invalid_dicom_with_warning(
                             &mut report,
                             source_path.clone(),
-                            ImportRejectionReason::InvalidDicom(format!("DICOM parse failed: {err}")),
+                            ImportRejectionReason::InvalidDicom({
+                                let err = err.to_string();
+                                crate::error::msg_with(
+                                    "error-import-dicom-parse-failed",
+                                    [("err", err.as_str())],
+                                )
+                            }),
                         );
                         let _ = fs::remove_file(&staged_path);
                         continue;
@@ -374,9 +415,13 @@ impl Importer {
                             record_invalid_dicom_with_warning(
                                 &mut report,
                                 source_path,
-                                ImportRejectionReason::InvalidDicom(format!(
-                                    "DICOM validation failed: {err}"
-                                )),
+                                ImportRejectionReason::InvalidDicom({
+                                    let err = err.to_string();
+                                    crate::error::msg_with(
+                                        "error-import-dicom-validation-failed",
+                                        [("err", err.as_str())],
+                                    )
+                                }),
                             );
                             let _ = fs::remove_file(&staged_path);
                         }
@@ -443,23 +488,43 @@ mod rejection_reason_tests {
 
 pub(super) fn validate_readable_dir(path: &Path) -> Result<()> {
     fs::read_dir(path)
-        .with_context(|| format!("reading import directory {}", path.display()))
+        .with_context(|| {
+            let path = path.display().to_string();
+            crate::error::msg_with("error-import-reading-directory", [("path", path.as_str())])
+        })
         .map(|_| ())
 }
 
 pub(super) fn validate_readable_file(path: &Path, kind: &str) -> Result<()> {
     regular_file_metadata(path)
-        .with_context(|| format!("reading metadata for {kind} {}", path.display()))?;
+        .with_context(|| {
+            let path = path.display().to_string();
+            crate::error::msg_with(
+                "error-import-reading-metadata",
+                [("kind", kind), ("path", path.as_str())],
+            )
+        })?;
     fs::File::open(path)
-        .with_context(|| format!("opening {kind} {}", path.display()))
+        .with_context(|| {
+            let path = path.display().to_string();
+            crate::error::msg_with(
+                "error-import-opening-kind",
+                [("kind", kind), ("path", path.as_str())],
+            )
+        })
         .map(|_| ())
 }
 
 pub(super) fn regular_file_metadata(path: &Path) -> Result<fs::Metadata> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("reading file metadata for {}", path.display()))?;
+    let metadata = fs::metadata(path).with_context(|| {
+        let path = path.display().to_string();
+        crate::error::msg_with(
+            "error-import-reading-file-metadata",
+            [("path", path.as_str())],
+        )
+    })?;
     if !metadata.file_type().is_file() {
-        return Err(anyhow!("not a regular file"));
+        return Err(anyhow!("{}", crate::error::msg("error-import-not-regular-file")));
     }
     Ok(metadata)
 }

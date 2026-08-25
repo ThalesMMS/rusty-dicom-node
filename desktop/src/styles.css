@@ -173,6 +173,34 @@ textarea {
   border-top: 1px solid var(--border-soft);
 }
 
+.locale-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--sans);
+  color: var(--text-dim);
+}
+
+.locale-toggle span {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.locale-toggle select {
+  width: 100%;
+  font-size: 11px;
+}
+
+.locale-current {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: none;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+}
+
 .status-dot {
   display: inline-block;
   width: 7px;

@@ -1,8 +1,7 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
-use clap::Parser;
 pub use dicom_node_client::{
-    aliases, cancel, config, db, dicom, error, importer, models, net, services,
+    aliases, cancel, config, db, dicom, error, i18n, importer, models, net, services,
 };
 use dicom_node_client::{
     cli::{Cli, Commands, LocalCommand, NodeCommand, SendCommand},
@@ -12,9 +11,38 @@ use dicom_node_client::{
     models::{MoveRequest, QueryCriteria},
     services::{AppServices, NodeDraftValues, NodePatchCliValues},
 };
+use fluent_bundle::FluentValue;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod tui;
+
+fn t(key: &str) -> String {
+    dicom_node_client::i18n::t(key)
+}
+
+fn tf<'a>(key: &str, pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+    dicom_node_client::error::msg_with(key, pairs)
+}
+
+fn t_owned(key: &str, pairs: &[(&str, String)]) -> String {
+    let refs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    dicom_node_client::error::msg_with(key, refs)
+}
+
+fn t_n(key: &str, name: &str, n: impl Into<i64>) -> String {
+    dicom_node_client::i18n::t_n(key, name, n)
+}
+
+fn t_mixed(key: &str, numbers: &[(&str, i64)], strings: &[(&str, String)]) -> String {
+    let mut args = HashMap::new();
+    for (name, n) in numbers {
+        args.insert((*name).to_string(), FluentValue::from(*n));
+    }
+    for (name, value) in strings {
+        args.insert((*name).to_string(), FluentValue::from(value.clone()));
+    }
+    dicom_node_client::i18n::t_with(key, &args)
+}
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -22,6 +50,11 @@ fn main() -> anyhow::Result<()> {
     let log_path = paths.logs_dir.join("app.log");
     let _tracing_guard = init_tracing(&paths.logs_dir)?;
     let services = AppServices::load_from_paths(paths)?;
+    if let Some(lang) = cli.lang.as_deref() {
+        dicom_node_client::i18n::persist_explicit_locale(lang, &services.paths)?;
+    } else {
+        dicom_node_client::i18n::apply_persisted_locale(services.config.locale.as_deref());
+    }
 
     let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     install_sigint_cancel_handler(Arc::clone(&cancel_flag))?;
@@ -39,8 +72,17 @@ fn main() -> anyhow::Result<()> {
                     notes: args.notes,
                 }))?;
                 println!(
-                    "Saved node {} [{}] => {}@{}:{}",
-                    node.name, node.id, node.ae_title, node.host, node.port
+                    "{}",
+                    t_owned(
+                        "cli-msg-saved-node",
+                        &[
+                            ("name", node.name.clone()),
+                            ("id", node.id.clone()),
+                            ("ae", node.ae_title.clone()),
+                            ("host", node.host.clone()),
+                            ("port", node.port.to_string()),
+                        ],
+                    )
                 );
             }
             NodeCommand::Edit(args) => {
@@ -54,29 +96,46 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 let node = services.update_node(&args.node, patch)?;
                 println!(
-                    "Updated node {} [{}] => {}@{}:{}",
-                    node.name, node.id, node.ae_title, node.host, node.port
+                    "{}",
+                    t_owned(
+                        "cli-msg-updated-node",
+                        &[
+                            ("name", node.name.clone()),
+                            ("id", node.id.clone()),
+                            ("ae", node.ae_title.clone()),
+                            ("host", node.host.clone()),
+                            ("port", node.port.to_string()),
+                        ],
+                    )
                 );
             }
             NodeCommand::Delete(args) => {
                 let removed = services.delete_node(&args.node)?;
-                println!("Removed {} node(s)", removed);
+                println!("{}", t_n("cli-msg-removed-nodes", "count", removed as i64));
             }
             NodeCommand::List => {
                 let nodes = services.list_nodes()?;
                 if nodes.is_empty() {
-                    println!("No saved nodes");
+                    println!("{}", t("cli-msg-no-saved-nodes"));
                 } else {
                     for node in nodes {
+                        let dest = node
+                            .preferred_move_destination
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string());
                         println!(
-                            "{} [{}]  {}@{}:{}  move_dest={}",
-                            node.name,
-                            node.id,
-                            node.ae_title,
-                            node.host,
-                            node.port,
-                            node.preferred_move_destination
-                                .unwrap_or_else(|| "-".to_string())
+                            "{}",
+                            t_owned(
+                                "cli-msg-node-list-row",
+                                &[
+                                    ("name", node.name),
+                                    ("id", node.id),
+                                    ("ae", node.ae_title),
+                                    ("host", node.host),
+                                    ("port", node.port.to_string()),
+                                    ("dest", dest),
+                                ],
+                            )
                         );
                     }
                 }
@@ -197,7 +256,8 @@ fn main() -> anyhow::Result<()> {
                     if args.json {
                         println!("{}", serde_json::to_string_pretty(&summary)?);
                     } else {
-                        eprintln!("Import failed: {err:#}");
+                        let err_text = format!("{err:#}");
+                        eprintln!("{}", tf("cli-msg-import-failed", [("error", err_text.as_str())]));
                         eprintln!();
                         eprintln!(
                             "{}",
@@ -261,8 +321,14 @@ fn main() -> anyhow::Result<()> {
                         };
                         println!("{}", serde_json::to_string_pretty(&summary)?);
                     } else {
-                        println!("Results: {}", results.len());
+                        println!("{}", t_n("cli-msg-results-count", "count", results.len() as i64));
                         for item in &results {
+                            let date = item
+                                .study_date
+                                .as_deref()
+                                .map(dicom_node_client::i18n::format_operator_date)
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| "-".to_string());
                             println!(
                                 "- level={} patient={} study_uid={} series_uid={} sop_uid={} date={} modality={} desc={}",
                                 item.level,
@@ -270,7 +336,7 @@ fn main() -> anyhow::Result<()> {
                                 item.study_instance_uid.clone().unwrap_or_else(|| "-".to_string()),
                                 item.series_instance_uid.clone().unwrap_or_else(|| "-".to_string()),
                                 item.sop_instance_uid.clone().unwrap_or_else(|| "-".to_string()),
-                                item.study_date.clone().unwrap_or_else(|| "-".to_string()),
+                                date,
                                 item.modality.clone().unwrap_or_else(|| "-".to_string()),
                                 item.study_description.clone().unwrap_or_else(|| "-".to_string()),
                             );
@@ -338,7 +404,8 @@ fn main() -> anyhow::Result<()> {
                     if args.json {
                         println!("{}", serde_json::to_string_pretty(&summary)?);
                     } else {
-                        eprintln!("Query failed: {err:#}");
+                        let err_text = format!("{err:#}");
+                        eprintln!("{}", tf("cli-msg-query-failed", [("error", err_text.as_str())]));
                         eprintln!();
                         eprintln!(
                             "{}",
@@ -400,7 +467,8 @@ fn main() -> anyhow::Result<()> {
                     if args.json {
                         println!("{}", serde_json::to_string_pretty(&summary)?);
                     } else {
-                        eprintln!("Retrieve failed: {err:#}");
+                        let err_text = format!("{err:#}");
+                        eprintln!("{}", tf("cli-msg-retrieve-failed", [("error", err_text.as_str())]));
                         eprintln!();
                         eprintln!(
                             "{}",
@@ -565,7 +633,8 @@ fn main() -> anyhow::Result<()> {
                         if json {
                             println!("{}", serde_json::to_string_pretty(&summary)?);
                         } else {
-                            eprintln!("Send failed: {err:#}");
+                            let err_text = format!("{err:#}");
+                            eprintln!("{}", tf("cli-msg-send-failed", [("error", err_text.as_str())]));
                             eprintln!();
                             eprintln!(
                                 "{}",
@@ -678,7 +747,8 @@ fn main() -> anyhow::Result<()> {
                         if json {
                             println!("{}", serde_json::to_string_pretty(&summary)?);
                         } else {
-                            eprintln!("Send failed: {err:#}");
+                            let err_text = format!("{err:#}");
+                            eprintln!("{}", tf("cli-msg-send-failed", [("error", err_text.as_str())]));
                             eprintln!();
                             eprintln!(
                                 "{}",
@@ -721,18 +791,40 @@ fn main() -> anyhow::Result<()> {
                 if let Some(format) = args.export {
                     export_studies(format, &studies, args.out.as_deref())?;
                 } else if studies.is_empty() {
-                    println!("No indexed local studies");
+                    println!("{}", t("cli-msg-no-local-studies"));
                 } else {
                     for study in studies {
                         println!(
-                            "{} | patient={} | date={} | desc={} | modalities={} | series={} | instances={}",
-                            study.study_instance_uid,
-                            study.patient_name.unwrap_or_else(|| "-".to_string()),
-                            study.study_date.unwrap_or_else(|| "-".to_string()),
-                            study.study_description.unwrap_or_else(|| "-".to_string()),
-                            study.modalities.unwrap_or_else(|| "-".to_string()),
-                            study.series_count,
-                            study.instance_count
+                            "{}",
+                            t_owned(
+                                "cli-msg-local-study-row",
+                                &[
+                                    ("uid", study.study_instance_uid),
+                                    (
+                                        "patient",
+                                        study.patient_name.unwrap_or_else(|| "-".to_string()),
+                                    ),
+                                    (
+                                        "date",
+                                        study
+                                            .study_date
+                                            .as_deref()
+                                            .map(dicom_node_client::i18n::format_operator_date)
+                                            .filter(|s| !s.is_empty())
+                                            .unwrap_or_else(|| "-".to_string()),
+                                    ),
+                                    (
+                                        "desc",
+                                        study.study_description.unwrap_or_else(|| "-".to_string()),
+                                    ),
+                                    (
+                                        "modalities",
+                                        study.modalities.unwrap_or_else(|| "-".to_string()),
+                                    ),
+                                    ("series", study.series_count.to_string()),
+                                    ("instances", study.instance_count.to_string()),
+                                ],
+                            )
                         );
                     }
                 }
@@ -764,7 +856,13 @@ fn main() -> anyhow::Result<()> {
                 if let Some(format) = args.export {
                     export_series(format, &series, args.out.as_deref())?;
                 } else if series.is_empty() {
-                    println!("No indexed series for study {}", args.study_instance_uid);
+                    println!(
+                        "{}",
+                        t_owned(
+                            "cli-msg-no-local-series",
+                            &[("uid", args.study_instance_uid.clone())],
+                        )
+                    );
                 } else {
                     for row in series {
                         println!(
@@ -788,7 +886,7 @@ fn main() -> anyhow::Result<()> {
 
             let started = Instant::now();
             if services.config.local_aes.is_empty() {
-                println!("Starting DICOM server with no configured local AEs");
+                println!("{}", t("cli-msg-starting-server-no-aes"));
             } else {
                 let listeners = services
                     .config
@@ -798,9 +896,12 @@ fn main() -> anyhow::Result<()> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 println!(
-                    "Starting DICOM server with {} local AE(s): {}",
-                    services.config.local_aes.len(),
-                    listeners
+                    "{}",
+                    t_mixed(
+                        "cli-msg-starting-server",
+                        &[("count", services.config.local_aes.len() as i64)],
+                        &[("aes", listeners)],
+                    )
                 );
             }
 
@@ -836,7 +937,7 @@ fn main() -> anyhow::Result<()> {
                 summary
                     .failures
                     .push(dicom_node_client::summary::FailureDetail {
-                        message: format!("serve exited with error: {err:#}"),
+                        message: t_owned("error-serve-exited", &[("error", format!("{err:#}"))]),
                         code: Some("serve_error".to_string()),
                     });
             }
@@ -870,8 +971,14 @@ fn main() -> anyhow::Result<()> {
             let listener_addr = services.config.storage_socket_addr();
 
             println!(
-                "Starting storage SCP at {} with AE title {}",
-                listener_addr, services.config.local_ae_title
+                "{}",
+                t_owned(
+                    "cli-msg-starting-storage-scp",
+                    &[
+                        ("addr", listener_addr.to_string()),
+                        ("ae", services.config.local_ae_title.clone()),
+                    ],
+                )
             );
 
             let report_result = services.run_storage_scp();
@@ -945,7 +1052,7 @@ fn install_sigint_cancel_handler(
     std::thread::spawn(move || {
         for _ in &mut signals {
             cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            eprintln!("Cancellation requested (SIGINT). Waiting for graceful shutdown...");
+            eprintln!("{}", dicom_node_client::error::msg("error-cancel-sigint"));
         }
     });
 
@@ -967,50 +1074,78 @@ fn init_tracing(logs_dir: &Path) -> anyhow::Result<tracing_appender::non_blockin
         .with(console_layer)
         .with(file_layer)
         .try_init()
-        .map_err(|err| anyhow::anyhow!("initializing tracing subscriber: {err}"))?;
+        .map_err(|err| {
+            let err = err.to_string();
+            anyhow::anyhow!(
+                "{}",
+                dicom_node_client::error::msg_with("error-tracing-init", [("err", err.as_str())])
+            )
+        })?;
 
     Ok(guard)
 }
 
 fn print_import_report(report: &dicom_node_client::models::ImportReport) {
+    println!("{}", t("cli-import-complete"));
+    println!("  {}", t_owned("cli-import-scanned", &[("n", report.scanned_files.to_string())]));
+    println!("  {}", t_owned("cli-import-accepted", &[("n", report.accepted.to_string())]));
     println!(
-        "Import complete\n  scanned={}\n  accepted={}\n  duplicates={} (by_sop_instance_uid={}, by_sha256={})\n  unreadable={}\n  invalid_dicom={}\n  rejected_total={}\n  skipped={}\n  failed_cleanup={}\n  total={}\n  stored_bytes={}",
-        report.scanned_files,
-        report.accepted,
-        report.duplicates,
-        report.duplicate_by_sop_instance_uid,
-        report.duplicate_by_sha256,
-        report.unreadable,
-        report.invalid_dicom,
-        report.rejected(),
-        report.skipped,
-        report.failed_cleanup,
-        report.total(),
-        report.stored_bytes
+        "  {}",
+        t_owned(
+            "cli-import-dup-detail",
+            &[
+                ("n", report.duplicates.to_string()),
+                ("sop", report.duplicate_by_sop_instance_uid.to_string()),
+                ("sha", report.duplicate_by_sha256.to_string()),
+            ],
+        )
+    );
+    println!("  {}", t_owned("cli-import-unreadable", &[("n", report.unreadable.to_string())]));
+    println!(
+        "  {}",
+        t_owned("cli-import-invalid-dicom", &[("n", report.invalid_dicom.to_string())])
+    );
+    println!(
+        "  {}",
+        t_owned("cli-import-rejected-total", &[("n", report.rejected().to_string())])
+    );
+    println!("  {}", t_owned("cli-import-skipped", &[("n", report.skipped.to_string())]));
+    println!(
+        "  {}",
+        t_owned("cli-import-failed-cleanup", &[("n", report.failed_cleanup.to_string())])
+    );
+    println!("  {}", t_owned("cli-import-total", &[("n", report.total().to_string())]));
+    println!(
+        "  {}",
+        t_owned("cli-import-stored-bytes", &[("n", report.stored_bytes.to_string())])
     );
     const IMPORT_FAILURE_PRINT_LIMIT: usize = 10;
     if !report.failures.is_empty() {
-        println!("failures:");
+        println!("{}", t("cli-msg-failures"));
         for failure in report.failures.iter().take(IMPORT_FAILURE_PRINT_LIMIT) {
             println!("  - {}", failure);
         }
         if report.failures.len() > IMPORT_FAILURE_PRINT_LIMIT {
             println!(
-                "  (showing first {} of {} failures)",
-                IMPORT_FAILURE_PRINT_LIMIT,
-                report.failures.len()
+                "  {}",
+                t_owned(
+                    "cli-msg-showing-failures",
+                    &[
+                        ("shown", IMPORT_FAILURE_PRINT_LIMIT.to_string()),
+                        ("total", report.failures.len().to_string()),
+                    ],
+                )
             );
         }
     }
 }
 
 fn print_send_outcome(outcome: &dicom_node_client::models::SendOutcome) {
-    println!(
-        "attempted={}\nsent={}\nfailed={}",
-        outcome.attempted, outcome.sent, outcome.failed
-    );
+    println!("{}", t_owned("cli-send-attempted", &[("n", outcome.attempted.to_string())]));
+    println!("{}", t_owned("cli-send-sent", &[("n", outcome.sent.to_string())]));
+    println!("{}", t_owned("cli-send-failed-count", &[("n", outcome.failed.to_string())]));
     if !outcome.failures.is_empty() {
-        println!("failures:");
+        println!("{}", t("cli-msg-failures"));
         for failure in &outcome.failures {
             println!("  - {}", failure);
         }

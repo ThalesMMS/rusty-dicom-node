@@ -27,9 +27,9 @@ fn classify_assoc_establish_error(
     node: &RemoteNode,
     addr: &str,
 ) -> anyhow::Error {
-    let mut msg = format!(
-        "association negotiation failed with {} ({}); hint: verify called AE title, presentation contexts/transfer syntaxes, and that the peer accepts associations",
-        node.name, addr
+    let mut msg = crate::error::msg_with(
+        "error-assoc-negotiation-failed",
+        [("name", node.name.as_str()), ("addr", addr)],
     );
 
     if let Some(source) = err.source() {
@@ -47,18 +47,18 @@ pub fn classify_assoc_receive_error(err: dicom_ul::association::Error) -> anyhow
     if let Some(io_err) = io_err {
         match io_err.kind() {
             std::io::ErrorKind::TimedOut => {
-                return anyhow!("timeout waiting for DIMSE response; hint: check network connectivity, AE title/host/port, and peer responsiveness")
-                    .context("association receive");
+                return anyhow!("{}", crate::error::msg("error-assoc-timeout"))
+                    .context(crate::error::msg("error-assoc-receive"));
             }
             std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset => {
-                return anyhow!("transport interruption while waiting for DIMSE response; hint: peer closed the connection or a network middlebox reset it")
-                    .context("association receive");
+                return anyhow!("{}", crate::error::msg("error-assoc-transport"))
+                    .context(crate::error::msg("error-assoc-receive"));
             }
             _ => {}
         }
     }
 
-    anyhow::Error::from(err).context("association receive")
+    anyhow::Error::from(err).context(crate::error::msg("error-assoc-receive"))
 }
 
 const DEFAULT_ASSOCIATION_IO_TIMEOUT: Duration = Duration::from_secs(60);
@@ -108,9 +108,7 @@ impl PDataAccumulator {
 
     pub fn feed(&mut self, value: &PDataValue) -> Result<()> {
         if self.is_complete {
-            return Err(anyhow!(
-                "cannot feed P-DATA fragment into a complete accumulator (missing take())"
-            ));
+            return Err(crate::net::err("error-net-pdata-feed-complete"));
         }
 
         self.buffer.extend_from_slice(&value.data);
@@ -415,11 +413,11 @@ impl AssociationFactory {
         association
             .inner_stream()
             .set_read_timeout(Some(DEFAULT_ASSOCIATION_IO_TIMEOUT))
-            .context("restoring association read timeout")?;
+            .context(crate::error::msg("error-net-restoring-read-timeout"))?;
         association
             .inner_stream()
             .set_write_timeout(Some(DEFAULT_ASSOCIATION_IO_TIMEOUT))
-            .context("restoring association write timeout")?;
+            .context(crate::error::msg("error-net-restoring-write-timeout"))?;
 
         Ok(association)
     }
@@ -446,14 +444,14 @@ impl AssociationFactory {
         self.negotiated_contexts(association)
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow!("no negotiated presentation context"))
+            .ok_or_else(|| crate::net::err("error-net-no-presentation-context"))
     }
 
     pub fn write_command_dataset(command: &DefaultMemObject) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(256);
         command
             .write_dataset_with_ts(&mut out, &entries::IMPLICIT_VR_LITTLE_ENDIAN.erased())
-            .context("writing command dataset")?;
+            .context(crate::error::msg("error-net-writing-command-dataset"))?;
         Ok(out)
     }
 
@@ -462,7 +460,7 @@ impl AssociationFactory {
             bytes,
             &entries::IMPLICIT_VR_LITTLE_ENDIAN.erased(),
         )
-        .context("reading command dataset")?;
+        .context(crate::error::msg("error-net-reading-command-dataset"))?;
         Ok(obj)
     }
 
@@ -686,15 +684,13 @@ fn validate_dataset_payload(len: usize) -> Result<()> {
         return Err(empty_dataset_error());
     }
     if !len.is_multiple_of(2) {
-        return Err(anyhow!(
-            "encoded dataset ended with an odd-length trailing fragment"
-        ));
+        return Err(crate::net::err("error-net-dataset-odd-length"));
     }
     Ok(())
 }
 
 fn empty_dataset_error() -> anyhow::Error {
-    anyhow!("encoded dataset is empty but COMMAND_DATA_SET_TYPE indicates a dataset is required")
+    crate::net::err("error-net-dataset-empty")
 }
 
 fn max_pdv_payload(peer_max_pdu_length: usize) -> usize {
@@ -722,13 +718,19 @@ fn preflight_tcp_connect(node: &RemoteNode, timeout: Duration) -> Result<()> {
                 error = %err,
                 "TCP preflight address resolution failed"
             );
-            return Err(anyhow!(
-                "resolving {} at {}:{}: {}",
-                node.name,
-                node.host,
-                node.port,
-                err
-            ));
+            return Err(anyhow!("{}", {
+                let port = node.port.to_string();
+                let err = err.to_string();
+                crate::error::msg_with(
+                    "error-assoc-resolving",
+                    [
+                        ("name", node.name.as_str()),
+                        ("host", node.host.as_str()),
+                        ("port", port.as_str()),
+                        ("err", err.as_str()),
+                    ],
+                )
+            }));
         }
     };
 
@@ -740,12 +742,17 @@ fn preflight_tcp_connect(node: &RemoteNode, timeout: Duration) -> Result<()> {
             port = node.port,
             "TCP preflight resolved no socket addresses"
         );
-        return Err(anyhow!(
-            "no socket addresses resolved for {} at {}:{}",
-            node.name,
-            node.host,
-            node.port
-        ));
+        return Err(anyhow!("{}", {
+            let port = node.port.to_string();
+            crate::error::msg_with(
+                "error-assoc-no-addresses",
+                [
+                    ("name", node.name.as_str()),
+                    ("host", node.host.as_str()),
+                    ("port", port.as_str()),
+                ],
+            )
+        }));
     }
 
     let mut last_err = None;
@@ -779,15 +786,22 @@ fn preflight_tcp_connect(node: &RemoteNode, timeout: Duration) -> Result<()> {
         error = %err,
         "TCP preflight could not reach remote node"
     );
-    Err(anyhow!(
-        "could not reach {} [{}] at {}:{} within {}s: {}. Check host/IP, port, and network reachability",
-        node.name,
-        node.ae_title,
-        node.host,
-        node.port,
-        timeout.as_secs(),
-        err
-    ))
+    Err(anyhow!("{}", {
+        let port = node.port.to_string();
+        let seconds = timeout.as_secs().to_string();
+        let err = err.to_string();
+        crate::error::msg_with(
+            "error-assoc-unreachable",
+            [
+                ("name", node.name.as_str()),
+                ("ae", node.ae_title.as_str()),
+                ("host", node.host.as_str()),
+                ("port", port.as_str()),
+                ("seconds", seconds.as_str()),
+                ("err", err.as_str()),
+            ],
+        )
+    }))
 }
 
 pub fn create_find_request_command(sop_class_uid: &str, message_id: u16) -> DefaultMemObject {

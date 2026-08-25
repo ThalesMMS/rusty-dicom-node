@@ -4,6 +4,7 @@
 //! used to describe a "next action" suggestion based on current UI context.
 
 use super::state::FocusPane;
+use super::tr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -85,70 +86,70 @@ pub(super) const SUGGESTION_RULES_V1: &[SuggestionRule] = &[
     // Help explicitly requested.
     SuggestionRule {
         matches: |ctx| ctx.show_help,
-        suggestion: |_| Suggestion::shortcut("F1/? — help"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.help")),
     },
     // Nodes pane.
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Nodes && ctx.has_selected_node,
-        suggestion: |_| Suggestion::shortcut("f — query selected node"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.query-node")),
     },
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Nodes,
-        suggestion: |_| Suggestion::command("node add <ae-title> <host:port>"),
+        suggestion: |_| Suggestion::command(tr("tui.suggest.node-add")),
     },
     // Query pane.
     SuggestionRule {
         matches: |ctx| {
             ctx.focus == FocusPane::Query && ctx.has_query_results && ctx.has_selected_query_result
         },
-        suggestion: |_| Suggestion::shortcut("m — retrieve selected"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.retrieve")),
     },
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Query,
-        suggestion: |_| Suggestion::shortcut("f — query a node"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.query")),
     },
     // Local pane.
     SuggestionRule {
         matches: |ctx| {
             ctx.focus == FocusPane::Local && !ctx.local_drill_down && ctx.has_selected_local_study
         },
-        suggestion: |_| Suggestion::shortcut("Enter — view series"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.view-series")),
     },
     SuggestionRule {
         matches: |ctx| {
             ctx.focus == FocusPane::Local && ctx.local_drill_down && !ctx.local_instance_drill_down
         },
-        suggestion: |_| Suggestion::shortcut("s — send selected series"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.send-series")),
     },
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Local && ctx.local_instance_drill_down,
-        suggestion: |_| Suggestion::shortcut("Esc — back to series"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.back-series")),
     },
     // Tasks pane.
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Tasks,
         suggestion: |ctx| {
             if ctx.has_running_task || ctx.has_queued_tasks {
-                Suggestion::shortcut("Enter — inspect task")
+                Suggestion::shortcut(tr("tui.suggest.inspect-task"))
             } else {
-                Suggestion::shortcut("F1/? — help")
+                Suggestion::shortcut(tr("tui.suggest.help"))
             }
         },
     },
     // Config pane.
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Config,
-        suggestion: |_| Suggestion::shortcut("c — edit config"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.edit-config")),
     },
     // Input pane.
     SuggestionRule {
         matches: |ctx| ctx.focus == FocusPane::Input,
-        suggestion: |_| Suggestion::shortcut("Enter — run command"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.run-command")),
     },
     // Generic fallback.
     SuggestionRule {
         matches: |_| true,
-        suggestion: |_| Suggestion::shortcut("F1/? — help"),
+        suggestion: |_| Suggestion::shortcut(tr("tui.suggest.help")),
     },
 ];
 
@@ -161,7 +162,7 @@ pub(super) fn resolve_top_suggestion(ctx: SuggestionContext) -> Suggestion {
     }
 
     // The rules table ends with an always() fallback, so this should never happen.
-    Suggestion::shortcut("F1/? — help")
+    Suggestion::shortcut(tr("tui.suggest.help"))
 }
 
 #[cfg(test)]
@@ -175,7 +176,7 @@ mod tests {
         ctx.show_help = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("F1/? — help")
+            Suggestion::shortcut(tr("tui.suggest.help"))
         );
     }
 
@@ -185,7 +186,7 @@ mod tests {
         ctx.has_selected_node = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("f — query selected node")
+            Suggestion::shortcut(tr("tui.suggest.query-node"))
         );
     }
 
@@ -194,7 +195,7 @@ mod tests {
         let ctx = SuggestionContext::new(FocusPane::Nodes);
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::command("node add <ae-title> <host:port>")
+            Suggestion::command(tr("tui.suggest.node-add"))
         );
     }
 
@@ -205,7 +206,7 @@ mod tests {
         ctx.has_selected_query_result = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("m — retrieve selected")
+            Suggestion::shortcut(tr("tui.suggest.retrieve"))
         );
     }
 
@@ -215,7 +216,7 @@ mod tests {
         ctx.has_query_results = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("f — query a node")
+            Suggestion::shortcut(tr("tui.suggest.query"))
         );
     }
 
@@ -225,7 +226,7 @@ mod tests {
         ctx.has_selected_local_study = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("Enter — view series")
+            Suggestion::shortcut(tr("tui.suggest.view-series"))
         );
     }
 
@@ -235,7 +236,7 @@ mod tests {
         ctx.local_drill_down = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("s — send selected series")
+            Suggestion::shortcut(tr("tui.suggest.send-series"))
         );
     }
 
@@ -246,7 +247,7 @@ mod tests {
         ctx.local_instance_drill_down = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("Esc — back to series")
+            Suggestion::shortcut(tr("tui.suggest.back-series"))
         );
     }
 
@@ -256,14 +257,14 @@ mod tests {
         ctx.has_running_task = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("Enter — inspect task")
+            Suggestion::shortcut(tr("tui.suggest.inspect-task"))
         );
 
         let mut ctx = SuggestionContext::new(FocusPane::Tasks);
         ctx.has_queued_tasks = true;
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("Enter — inspect task")
+            Suggestion::shortcut(tr("tui.suggest.inspect-task"))
         );
     }
 
@@ -272,7 +273,7 @@ mod tests {
         let ctx = SuggestionContext::new(FocusPane::Tasks);
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("F1/? — help")
+            Suggestion::shortcut(tr("tui.suggest.help"))
         );
     }
 
@@ -281,7 +282,7 @@ mod tests {
         let ctx = SuggestionContext::new(FocusPane::Config);
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("c — edit config")
+            Suggestion::shortcut(tr("tui.suggest.edit-config"))
         );
     }
 
@@ -290,7 +291,7 @@ mod tests {
         let ctx = SuggestionContext::new(FocusPane::Input);
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("Enter — run command")
+            Suggestion::shortcut(tr("tui.suggest.run-command"))
         );
     }
 
@@ -299,7 +300,7 @@ mod tests {
         let ctx = SuggestionContext::new(FocusPane::Logs);
         assert_eq!(
             resolve_top_suggestion(ctx),
-            Suggestion::shortcut("F1/? — help")
+            Suggestion::shortcut(tr("tui.suggest.help"))
         );
     }
 }

@@ -18,10 +18,10 @@ use crate::models::LocalInstance;
 pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view: &TuiView) {
     let (title, content) = match view.focus {
         FocusPane::Nodes => match view.selected_node.and_then(|index| view.nodes.get(index)) {
-            Some(node) => ("Node Detail", format_node_detail(node)),
+            Some(node) => (tr("tui-pane-node-detail"), format_node_detail(node)),
             None => (
-                "Node Detail",
-                detail_placeholder_text("Select a remote node to inspect its metadata."),
+                tr("tui-pane-node-detail"),
+                detail_placeholder_text(&tr("tui-detail-select-node")),
             ),
         },
         FocusPane::Local => {
@@ -30,12 +30,10 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
                     .selected_local_instance
                     .and_then(|index| view.local_instances.get(index))
                 {
-                    Some(instance) => ("Instance Detail", format_instance_detail(instance)),
+                    Some(instance) => (tr("tui-pane-instance-detail"), format_instance_detail(instance)),
                     None => (
-                        "Instance Detail",
-                        detail_placeholder_text(
-                            "Select an instance to inspect it, or return to series with Esc.",
-                        ),
+                        tr("tui-pane-instance-detail"),
+                        detail_placeholder_text(&tr("tui-empty-detail-instance")),
                     ),
                 }
             } else if view.local_drill_down {
@@ -58,13 +56,11 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
                     parent_study,
                 ) {
                     (Some(series), Some(study)) => {
-                        ("Series Detail", format_series_detail(series, study))
+                        (tr("tui-pane-series-detail"), format_series_detail(series, study))
                     }
                     _ => (
-                        "Series Detail",
-                        detail_placeholder_text(
-                            "Select a series to inspect it, or return to studies with Esc.",
-                        ),
+                        tr("tui-pane-series-detail"),
+                        detail_placeholder_text(&tr("tui-empty-detail-series")),
                     ),
                 }
             } else {
@@ -80,13 +76,11 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
                         } else {
                             &[]
                         };
-                        ("Study Detail", format_study_detail(study, series))
+                        (tr("tui-pane-study-detail"), format_study_detail(study, series))
                     }
                     None => (
-                        "Study Detail",
-                        detail_placeholder_text(
-                            "Select a local study to inspect patient and series metadata.",
-                        ),
+                        tr("tui-pane-study-detail"),
+                        detail_placeholder_text(&tr("tui-empty-detail-study")),
                     ),
                 }
             }
@@ -96,26 +90,22 @@ pub(in crate::tui) fn render_detail_pane(frame: &mut Frame<'_>, area: Rect, view
             .and_then(|index| view.query_results.get(index))
         {
             Some(item) => (
-                "Query Result Detail",
+                tr("tui-pane-query-result-detail"),
                 format_query_result_detail(item, view.query_context_node),
             ),
             None => (
-                "Query Result Detail",
-                detail_placeholder_text(
-                    "Select a query result to inspect metadata and retrieve context.",
-                ),
+                tr("tui-pane-query-result-detail"),
+                detail_placeholder_text(&tr("tui-empty-detail-query")),
             ),
         },
         FocusPane::Config | FocusPane::Logs | FocusPane::Tasks | FocusPane::Input => (
-            "Detail",
-            detail_placeholder_text(
-                "The detail pane follows the active Remote Nodes, Local, and Query panes.",
-            ),
+            tr("tui-pane-detail"),
+            detail_placeholder_text(&tr("tui-detail-placeholder-followup")),
         ),
     };
 
     let block = Block::bordered().title_top(pane_title_text(
-        &format!("{title} (PgUp/PgDn when not typing)"),
+        &tr1("tui-pane-detail-hint", "title", &title),
         matches!(
             view.focus,
             FocusPane::Nodes | FocusPane::Local | FocusPane::Query
@@ -242,12 +232,16 @@ mod tests {
 ///
 /// A `Text` containing the formatted, line-oriented detail view for the given node.
 pub(in crate::tui) fn format_node_detail(node: &RemoteNode) -> Text<'static> {
+    let host_port_label = format!("{}:{}", tr("tui-field-host"), tr("tui-field-port"));
     let mut lines = vec![
-        detail_line("Name", node.name.clone()),
-        detail_line("AE Title", node.ae_title.clone()),
-        detail_line("Host:Port", format!("{}:{}", node.host, node.port)),
+        detail_line(&tr("tui-detail-name"), node.name.clone()),
+        detail_line(&tr("tui-detail-ae-title"), node.ae_title.clone()),
         detail_line(
-            "Move Destination",
+            &host_port_label,
+            format!("{}:{}", node.host, node.port),
+        ),
+        detail_line(
+            &tr("tui-field-move-destination"),
             node.preferred_move_destination
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
@@ -258,12 +252,12 @@ pub(in crate::tui) fn format_node_detail(node: &RemoteNode) -> Text<'static> {
 
     if let Some(notes) = non_empty_text(node.notes.as_deref()) {
         lines.push(Line::from(""));
-        append_multiline_detail(&mut lines, "Notes", notes);
+        append_multiline_detail(&mut lines, &tr("tui-field-notes"), notes);
     }
 
     lines.push(Line::from(""));
-    lines.push(detail_line("Created", node.created_at.clone()));
-    lines.push(detail_line("Updated", node.updated_at.clone()));
+    lines.push(detail_line(&tr("tui.detail.created"), node.created_at.clone()));
+    lines.push(detail_line(&tr("desktop.table.updated"), node.updated_at.clone()));
 
     Text::from(lines)
 }
@@ -315,49 +309,63 @@ pub(in crate::tui) fn format_study_detail(
 
     let mut lines = vec![
         detail_line(
-            "Patient Name",
+            &tr("tui.field.patient-name"),
             display_optional_detail(study.patient_name.as_deref(), "-"),
         ),
         detail_line(
-            "Patient ID",
+            &tr("tui.field.patient-id"),
             display_optional_detail(study.patient_id.as_deref(), "-"),
         ),
         detail_line(
-            "Study Date",
-            display_optional_detail(study.study_date.as_deref(), "-"),
+            &tr("desktop.table.date"),
+            display_optional_detail(
+                study
+                    .study_date
+                    .as_deref()
+                    .map(crate::i18n::format_operator_date)
+                    .as_deref(),
+                "-",
+            ),
         ),
         detail_line(
-            "Study Description",
+            &tr("tui.field.study-description"),
             display_optional_detail(study.study_description.as_deref(), "-"),
         ),
         detail_line(
-            "Modalities",
+            &tr("desktop.table.modalities"),
             display_optional_detail(study.modalities.as_deref(), "-"),
         ),
-        detail_line("Series Count", study.series_count.to_string()),
-        detail_line("Instance Count", study.instance_count.to_string()),
-        detail_line("Study Instance UID", study.study_instance_uid.clone()),
+        detail_line(&tr("desktop.table.series"), tr_n("count-series", "n", study.series_count)),
+        detail_line(
+            &tr("desktop.table.instances"),
+            tr_n("count-instances", "n", study.instance_count),
+        ),
+        detail_line(&tr("tui.form.field-study-uid"), study.study_instance_uid.clone()),
         Line::from(""),
-        detail_section_heading("Series:"),
+        detail_section_heading(&format!("{}:", tr("common.series"))),
     ];
 
     if series.is_empty() {
-        lines.push(Line::from("  No series loaded for this study."));
+        lines.push(Line::from(format!("  {}", tr("tui.empty.local-series"))));
     } else {
         for entry in series.iter().take(SERIES_PREVIEW_LIMIT) {
             let modality = display_optional_detail(entry.modality.as_deref(), "-");
             let series_number = display_optional_detail(entry.series_number.as_deref(), "-");
             let description = display_optional_detail(entry.series_description.as_deref(), "-");
             lines.push(Line::from(format!(
-                "  {modality} | #{series_number} | {description} | {} inst",
-                entry.instance_count
+                "  {modality} | #{series_number} | {description} | {}",
+                tr_n("tui-row-instance-count", "n", entry.instance_count),
             )));
         }
 
         if series.len() > SERIES_PREVIEW_LIMIT {
             lines.push(Line::from(format!(
-                "  ... and {} more series",
-                series.len() - SERIES_PREVIEW_LIMIT
+                "  {}",
+                tr_n(
+                    "tui-detail-more-series",
+                    "n",
+                    (series.len() - SERIES_PREVIEW_LIMIT) as i64,
+                )
             )));
         }
     }
@@ -402,64 +410,70 @@ pub(in crate::tui) fn format_series_detail(
     parent_study: &StudySummary,
 ) -> Text<'static> {
     Text::from(vec![
-        detail_line("Series Instance UID", series.series_instance_uid.clone()),
+        detail_line(&tr("tui.form.field-series-uid"), series.series_instance_uid.clone()),
         detail_line(
-            "Modality",
+            &tr("tui.field.modality"),
             display_optional_detail(series.modality.as_deref(), "-"),
         ),
         detail_line(
-            "Series Number",
+            &tr("common.series"),
             display_optional_detail(series.series_number.as_deref(), "-"),
         ),
         detail_line(
-            "Description",
+            &tr("common.description"),
             display_optional_detail(series.series_description.as_deref(), "-"),
         ),
-        detail_line("Instance Count", series.instance_count.to_string()),
-        detail_line("Parent Study UID", parent_study.study_instance_uid.clone()),
+        detail_line(
+            &tr("desktop.table.instances"),
+            tr_n("count-instances", "n", series.instance_count),
+        ),
+        detail_line(&tr("tui.form.field-study-uid"), parent_study.study_instance_uid.clone()),
     ])
 }
 
 pub(in crate::tui) fn format_instance_detail(instance: &LocalInstance) -> Text<'static> {
     let mut lines = vec![
-        detail_line("SOP Instance UID", instance.sop_instance_uid.clone()),
-        detail_line("SOP Class UID", instance.sop_class_uid.clone()),
+        detail_line(&tr("tui.form.field-sop-uid"), instance.sop_instance_uid.clone()),
+        detail_line(&tr("tui-field-sop-class-uid"), instance.sop_class_uid.clone()),
         detail_line(
-            "Transfer Syntax UID",
+            &tr("tui-field-transfer-syntax-uid"),
             display_optional_detail(instance.transfer_syntax_uid.as_deref(), "-"),
         ),
         detail_line(
-            "Modality",
+            &tr("tui.field.modality"),
             display_optional_detail(instance.modality.as_deref(), "-"),
         ),
         detail_line(
-            "Instance Number",
+            &tr("common.instance"),
             display_optional_detail(instance.instance_number.as_deref(), "-"),
         ),
         detail_line(
-            "Series Number",
+            &tr("common.series"),
             display_optional_detail(instance.series_number.as_deref(), "-"),
         ),
         detail_line(
-            "Series Description",
+            &tr("common.description"),
             display_optional_detail(instance.series_description.as_deref(), "-"),
         ),
         detail_line(
-            "Study Description",
+            &tr("tui.field.study-description"),
             display_optional_detail(instance.study_description.as_deref(), "-"),
         ),
     ];
 
     lines.push(Line::from(""));
-    lines.push(detail_section_heading("Storage:"));
-    lines.push(detail_line("Managed Path", instance.managed_path.clone()));
-    lines.push(detail_line("Source Path", instance.source_path.clone()));
+    lines.push(detail_section_heading(&tr("common.path")));
+    lines.push(detail_line(&tr("tui.field.path"), instance.managed_path.clone()));
+    lines.push(detail_line(&tr("tui.field.path"), instance.source_path.clone()));
     lines.push(detail_line(
-        "Size (bytes)",
+        &tr("common.bytes"),
         instance.file_size_bytes.to_string(),
     ));
-    lines.push(detail_line("SHA-256", instance.sha256.clone()));
-    lines.push(detail_line("Imported At", instance.imported_at.clone()));
+    lines.push(detail_line(&tr("tui-field-sha256"), instance.sha256.clone()));
+    lines.push(detail_line(
+        &tr("desktop.table.date"),
+        crate::i18n::format_operator_date(&instance.imported_at),
+    ));
 
     Text::from(lines)
 }
@@ -492,11 +506,11 @@ pub(in crate::tui) fn format_query_result_detail(
     item: &QueryMatch,
     context_node: Option<&RemoteNode>,
 ) -> Text<'static> {
-    let mut lines = vec![detail_line("Level", item.level.to_string())];
+    let mut lines = vec![detail_line(&tr("tui.field.level"), item.level.to_string())];
 
     if let Some(node) = context_node {
         lines.push(detail_line(
-            "Query Node",
+            &tr("tui.pane.query-node"),
             format!(
                 "{} [{}] {}:{}",
                 node.name, node.ae_title, node.host, node.port
@@ -504,29 +518,36 @@ pub(in crate::tui) fn format_query_result_detail(
         ));
     }
 
-    push_optional_detail_line(&mut lines, "Patient Name", item.patient_name.as_deref());
-    push_optional_detail_line(&mut lines, "Patient ID", item.patient_id.as_deref());
+    push_optional_detail_line(&mut lines, tr("tui.field.patient-name"), item.patient_name.as_deref());
+    push_optional_detail_line(&mut lines, tr("tui.field.patient-id"), item.patient_id.as_deref());
     push_optional_detail_line(
         &mut lines,
-        "Accession Number",
+        tr("tui.field.accession"),
         item.accession_number.as_deref(),
     );
-    push_optional_detail_line(&mut lines, "Study Date", item.study_date.as_deref());
     push_optional_detail_line(
         &mut lines,
-        "Study Description",
+        tr("desktop.table.date"),
+        item.study_date
+            .as_deref()
+            .map(crate::i18n::format_operator_date)
+            .as_deref(),
+    );
+    push_optional_detail_line(
+        &mut lines,
+        tr("tui.field.study-description"),
         item.study_description.as_deref(),
     );
     push_optional_detail_line(
         &mut lines,
-        "Series Description",
+        tr("common.description"),
         item.series_description.as_deref(),
     );
-    push_optional_detail_line(&mut lines, "Series Number", item.series_number.as_deref());
-    push_optional_detail_line(&mut lines, "Modality", item.modality.as_deref());
+    push_optional_detail_line(&mut lines, tr("common.series"), item.series_number.as_deref());
+    push_optional_detail_line(&mut lines, tr("tui.field.modality"), item.modality.as_deref());
     push_optional_detail_line(
         &mut lines,
-        "Instance Number",
+        tr("common.instance"),
         item.instance_number.as_deref(),
     );
 
@@ -539,17 +560,17 @@ pub(in crate::tui) fn format_query_result_detail(
         lines.push(detail_section_heading("UIDs:"));
         push_optional_detail_line(
             &mut lines,
-            "Study Instance UID",
+            tr("tui.form.field-study-uid"),
             item.study_instance_uid.as_deref(),
         );
         push_optional_detail_line(
             &mut lines,
-            "Series Instance UID",
+            tr("tui.form.field-series-uid"),
             item.series_instance_uid.as_deref(),
         );
         push_optional_detail_line(
             &mut lines,
-            "SOP Instance UID",
+            tr("tui.form.field-sop-uid"),
             item.sop_instance_uid.as_deref(),
         );
     }
@@ -571,7 +592,7 @@ pub(in crate::tui) fn detail_placeholder_text(message: &str) -> Text<'static> {
     Text::from(vec![
         Line::from(message.to_string()),
         Line::from(""),
-        Line::from("Change focus to a list pane and move the selection to update this view."),
+        Line::from(tr("tui-detail-placeholder-followup")),
     ])
 }
 
@@ -609,9 +630,9 @@ pub(in crate::tui) fn detail_line(label: &str, value: impl Into<String>) -> Line
 /// let heading = detail_section_heading("UIDs:");
 /// // `heading` will render the text "UIDs:" in bold within the UI.
 /// ```
-pub(in crate::tui) fn detail_section_heading(label: &str) -> Line<'static> {
+pub(in crate::tui) fn detail_section_heading(label: impl AsRef<str>) -> Line<'static> {
     Line::from(Span::styled(
-        label.to_string(),
+        label.as_ref().to_string(),
         Style::default().add_modifier(Modifier::BOLD),
     ))
 }
@@ -672,10 +693,10 @@ pub(in crate::tui) fn append_multiline_detail(
 /// ```
 pub(in crate::tui) fn push_optional_detail_line(
     lines: &mut Vec<Line<'static>>,
-    label: &str,
+    label: impl AsRef<str>,
     value: Option<&str>,
 ) {
     if let Some(value) = non_empty_text(value) {
-        lines.push(detail_line(label, value.to_string()));
+        lines.push(detail_line(label.as_ref(), value.to_string()));
     }
 }

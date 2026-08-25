@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use dicom_dictionary_std::tags;
 use dicom_ul::{
     association::{Association, ServerAssociationOptions},
@@ -314,7 +314,7 @@ impl StorageScpServer {
                 Ok(Err(err)) if run_result.is_ok() => run_result = Err(err),
                 Ok(Err(_)) => {}
                 Err(_) if run_result.is_ok() => {
-                    run_result = Err(anyhow!("storage SCP thread panicked"));
+                    run_result = Err(crate::net::err("error-net-scp-thread-panicked"));
                 }
                 Err(_) => {}
             }
@@ -383,10 +383,10 @@ impl StorageScpServer {
         let listener = self.bind_listener_for_ae(&ae)?;
         let local_addr = listener
             .local_addr()
-            .context("reading storage SCP listener address")?;
+            .context(crate::error::msg("error-net-listener-address"))?;
         let port = listener
             .local_addr()
-            .context("reading storage SCP listener port")?
+            .context(crate::error::msg("error-net-listener-port"))?
             .port();
         let server = self.clone();
         let thread_ae = ae.clone();
@@ -421,18 +421,14 @@ impl StorageScpServer {
 
     fn configured_local_aes_for_server(&self) -> Result<Vec<LocalAeConfig>> {
         if self.config.local_aes.is_empty() {
-            return Err(anyhow!(
-                "local_aes must contain at least one AE to start storage SCP"
-            ));
+            return Err(crate::net::err("error-net-local-aes-empty"));
         }
         Ok(self.config.local_aes.clone())
     }
 
     fn legacy_local_ae_for_server(&self) -> Result<LocalAeConfig> {
         if self.config.local_aes.is_empty() {
-            return Err(anyhow!(
-                "local_aes must contain at least one AE to start storage SCP"
-            ));
+            return Err(crate::net::err("error-net-local-aes-empty"));
         }
 
         let mut ae = self
@@ -468,16 +464,19 @@ impl StorageScpServer {
     fn bind_listener_for_ae(&self, ae: &LocalAeConfig) -> Result<TcpListener> {
         let addr = &ae.bind_addr;
         let listener = TcpListener::bind(&addr).with_context(|| {
-            format!(
-                "binding storage SCP at {} for AE {}. Another local DICOM receiver may already be using that port. Update storage_scp_port/local_aes in {} or stop the conflicting listener",
-                addr,
-                ae.title,
-                self.paths.config_json.display()
+            let config = self.paths.config_json.display().to_string();
+            crate::error::msg_with(
+                "error-net-binding-storage-scp",
+                [
+                    ("addr", addr.as_str()),
+                    ("ae", ae.title.as_str()),
+                    ("config", config.as_str()),
+                ],
             )
         })?;
         listener
             .set_nonblocking(true)
-            .context("setting listener nonblocking mode")?;
+            .context(crate::error::msg("error-net-listener-nonblocking"))?;
         Ok(listener)
     }
 
@@ -512,7 +511,7 @@ impl StorageScpServer {
 
                     if let Err(err) = stream.set_nonblocking(false) {
                         return Err(err)
-                            .context("setting accepted storage socket to blocking mode");
+                            .context(crate::error::msg("error-net-setting-socket-blocking"));
                     }
                     let server = self.clone();
                     let connection_ae = ae.clone();
@@ -552,7 +551,7 @@ impl StorageScpServer {
     ) -> Result<()> {
         let peer_socket_addr = stream
             .peer_addr()
-            .context("reading storage SCP peer socket address")?;
+            .context(crate::error::msg("error-net-peer-socket"))?;
         let mut ae_config = self.config.clone();
         ae_config.local_ae_title = ae.title.clone();
         let verification_provider = VerificationProvider::new();
@@ -598,7 +597,7 @@ impl StorageScpServer {
         let mut association = match options.establish(stream) {
             Ok(association) => association,
             Err(err) => {
-                return Err(err).context("establishing storage SCP association");
+                return Err(err).context(crate::error::msg("error-net-establishing-assoc"));
             }
         };
         let peer_ae_title = association.peer_ae_title().to_string();
@@ -659,7 +658,7 @@ impl StorageScpServer {
         // Spec: temp files should live under the managed store directory, in a hidden
         // subdir. This keeps lifecycle/cleanup tied to the app's managed data.
         let temp_dir = self.paths.managed_store_dir.join(".incoming");
-        fs::create_dir_all(&temp_dir).context("creating storage SCP .incoming dir")?;
+        fs::create_dir_all(&temp_dir).context(crate::error::msg("error-net-creating-incoming-dir"))?;
 
         let mut temp_dataset_path: Option<std::path::PathBuf> = None;
         let mut temp_dataset_writer: Option<BufWriter<fs::File>> = None;
@@ -681,7 +680,9 @@ impl StorageScpServer {
 
                                     let command_field =
                                         read_u16_opt_from_mem(&command, tags::COMMAND_FIELD)
-                                            .ok_or_else(|| anyhow!("missing command field"))?;
+                                            .ok_or_else(|| {
+                                                crate::net::err("error-net-missing-command-field")
+                                            })?;
                                     let abstract_syntax = negotiated_abstract_syntax(
                                         &association,
                                         value.presentation_context_id,
@@ -934,7 +935,7 @@ impl StorageScpServer {
                                 if let Some(writer) = temp_dataset_writer.as_mut() {
                                     writer
                                         .write_all(&value.data)
-                                        .context("writing dataset bytes to temp file")?;
+                                        .context(crate::error::msg("error-net-writing-temp-dataset"))?;
                                 }
 
                                 if value.is_last {
@@ -943,7 +944,9 @@ impl StorageScpServer {
                                         self.metrics.record_c_store_received();
 
                                         if let Some(writer) = temp_dataset_writer.as_mut() {
-                                            writer.flush().context("flushing temp dataset file")?;
+                                            writer.flush().context(crate::error::msg(
+                                                "error-net-flushing-temp-dataset",
+                                            ))?;
                                         }
                                         temp_dataset_writer = None;
 
@@ -1207,7 +1210,13 @@ fn negotiated_abstract_syntax(
         .iter()
         .find(|context| context.id == presentation_context_id)
         .map(|context| context.abstract_syntax.as_str())
-        .ok_or_else(|| anyhow!("missing negotiated presentation context {presentation_context_id}"))
+        .ok_or_else(|| {
+            let id = presentation_context_id.to_string();
+            crate::net::err_with(
+                "error-net-no-presentation-context-id",
+                [("id", id.as_str())],
+            )
+        })
 }
 
 struct RemoveFileOnDrop {
@@ -1251,7 +1260,7 @@ impl BackgroundStorageScp {
         if let Some(join_handle) = self.join_handle.take() {
             match join_handle.join() {
                 Ok(result) => result?,
-                Err(_) => return Err(anyhow!("storage SCP thread panicked")),
+                Err(_) => return Err(crate::net::err("error-net-scp-thread-panicked")),
             }
         }
         Ok(())

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, Play, Square } from "lucide-react";
 import { formatBytes, getServerMetrics, startServer, stopServer } from "../api";
+import { useI18n } from "../i18n";
 import type { ActivityEntry, ScpSessionReport, ServerMetrics, Status } from "../types";
 
 interface Props {
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export default function Server({ status, onStatusChange, onNavigate, onActivity }: Props) {
+  const { t } = useI18n();
   const [metrics, setMetrics] = useState<ServerMetrics | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,12 +45,12 @@ export default function Server({ status, onStatusChange, onNavigate, onActivity 
   }, []);
 
   const health = useMemo(() => {
-    if (!metrics) return "Loading metrics";
+    if (!metrics) return t("desktop-server-health-loading");
     if (metrics.server_associations_rejected_total > 0 || metrics.c_store_failed_total > 0) {
-      return "Review failures";
+      return t("desktop-server-health-review");
     }
-    return running ? "Ready for inbound C-STORE" : "Stopped";
-  }, [metrics, running]);
+    return running ? t("desktop-server-health-ready") : t("desktop-server-health-stopped");
+  }, [metrics, running, t]);
 
   const toggle = async () => {
     setBusy(true);
@@ -59,8 +61,14 @@ export default function Server({ status, onStatusChange, onNavigate, onActivity 
         setLastReport(report);
         onActivity({
           kind: "server",
-          title: "Storage SCP stopped",
-          detail: report ? `received=${report.received}, stored=${report.stored}, failed=${report.failed}` : "No active session.",
+          title: t("desktop-server-activity-stopped"),
+          detail: report
+            ? t("desktop-server-activity-stopped-detail", {
+                received: report.received,
+                stored: report.stored,
+                failed: report.failed,
+              })
+            : t("desktop-server-activity-stopped-empty"),
           tone: report && report.failed > 0 ? "warning" : "info",
         });
       } else {
@@ -68,8 +76,8 @@ export default function Server({ status, onStatusChange, onNavigate, onActivity 
         await startServer();
         onActivity({
           kind: "server",
-          title: "Storage SCP started",
-          detail: status?.listener_addr ?? "Listener started.",
+          title: t("desktop-server-activity-started"),
+          detail: status?.listener_addr ?? t("desktop-server-activity-started-detail"),
           tone: "success",
         });
       }
@@ -77,7 +85,7 @@ export default function Server({ status, onStatusChange, onNavigate, onActivity 
     } catch (e) {
       const message = String(e);
       setError(message);
-      onActivity({ kind: "server", title: "Storage SCP control failed", detail: message, tone: "error" });
+      onActivity({ kind: "server", title: t("desktop-server-activity-fail"), detail: message, tone: "error" });
     } finally {
       setBusy(false);
     }
@@ -87,17 +95,17 @@ export default function Server({ status, onStatusChange, onNavigate, onActivity 
     <>
       <div className="page-header compact">
         <div>
-          <h1>Storage Server</h1>
-          <p>Standalone storage SCP for inbound C-STORE and local archive indexing.</p>
+          <h1>{t("desktop-server-title")}</h1>
+          <p>{t("desktop-server-subtitle")}</p>
         </div>
         <div className="header-actions">
           <button className="btn" onClick={() => onNavigate("logs")}>
             <FileText size={15} />
-            Logs
+            {t("desktop-server-logs")}
           </button>
           <button className={`btn ${running ? "danger" : "primary"}`} onClick={toggle} disabled={busy}>
             {busy ? <span className="spinner" /> : running ? <Square size={15} /> : <Play size={15} />}
-            {running ? "Stop server" : "Start server"}
+            {running ? t("desktop-server-stop") : t("desktop-server-start")}
           </button>
         </div>
       </div>
@@ -105,53 +113,97 @@ export default function Server({ status, onStatusChange, onNavigate, onActivity 
       {error && <div className="alert error">{error}</div>}
       {lastReport && (
         <div className="alert info">
-          Session ended: received {lastReport.received}, stored {lastReport.stored}, failed {lastReport.failed}.
+          {t("desktop-server-session-ended", {
+            received: lastReport.received,
+            stored: lastReport.stored,
+            failed: lastReport.failed,
+          })}
         </div>
       )}
 
       <div className="card status-card">
         <div>
-          <span className={`pill ${running ? "ok" : ""}`}>{running ? "LISTENING" : "STOPPED"}</span>
+          <span className={`pill ${running ? "ok" : ""}`}>
+            {running ? t("desktop-server-listening") : t("desktop-server-stopped-pill")}
+          </span>
           <h2 style={{ marginTop: 10, marginBottom: 0 }}>{health}</h2>
           <p className="muted" style={{ marginTop: 6 }}>
-            {status?.listener_addr ?? "…"} · AE {status?.local_ae_title ?? "…"}
+            {t("desktop-server-addr-ae", {
+              addr: status?.listener_addr ?? "…",
+              ae: status?.local_ae_title ?? "…",
+            })}
           </p>
         </div>
         <dl className="kv dense">
-          <dt>Strict PDU</dt>
-          <dd>{status?.strict_pdu ? "yes" : "no"}</dd>
-          <dt>Promiscuous storage</dt>
-          <dd>{status?.allow_promiscuous_storage ? "enabled" : "disabled"}</dd>
-          <dt>Log file</dt>
+          <dt>{t("desktop-dashboard-kv-strict-pdu")}</dt>
+          <dd>{status?.strict_pdu ? t("desktop-common-yes") : t("desktop-common-no")}</dd>
+          <dt>{t("desktop-dashboard-kv-promiscuous")}</dt>
+          <dd>
+            {status?.allow_promiscuous_storage
+              ? t("desktop-common-enabled")
+              : t("desktop-common-disabled")}
+          </dd>
+          <dt>{t("desktop-dashboard-kv-log-file")}</dt>
           <dd>{status?.active_log_file ?? "—"}</dd>
         </dl>
       </div>
 
       <div className="grid cols-4" style={{ marginTop: 14 }}>
-        <Metric label="Stored" value={metrics?.c_store_stored_total ?? "—"} rate={rates.stored} accent />
-        <Metric label="Failed" value={metrics?.c_store_failed_total ?? "—"} rate={rates.failed} danger />
-        <Metric label="Accepted associations" value={metrics?.server_associations_accepted_total ?? "—"} rate={rates.associations} />
-        <Metric label="Rejected associations" value={metrics?.server_associations_rejected_total ?? "—"} danger />
+        <Metric
+          label={t("desktop-server-stored")}
+          value={metrics?.c_store_stored_total ?? "—"}
+          rate={rates.stored}
+          rateLabel={t("desktop-server-rate", { rate: rates.stored })}
+          accent
+        />
+        <Metric
+          label={t("desktop-server-failed")}
+          value={metrics?.c_store_failed_total ?? "—"}
+          rate={rates.failed}
+          rateLabel={t("desktop-server-rate", { rate: rates.failed })}
+          danger
+        />
+        <Metric
+          label={t("desktop-server-assoc-accepted")}
+          value={metrics?.server_associations_accepted_total ?? "—"}
+          rate={rates.associations}
+          rateLabel={t("desktop-server-rate", { rate: rates.associations })}
+        />
+        <Metric
+          label={t("desktop-server-assoc-rejected")}
+          value={metrics?.server_associations_rejected_total ?? "—"}
+          danger
+        />
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
-        <h2>DIMSE counters</h2>
+        <h2>{t("desktop-server-dimse")}</h2>
         {metrics ? (
           <div className="metric-list two-col">
-            <Counter label="C-STORE received" value={metrics.c_store_received_total} />
-            <Counter label="C-STORE stored" value={metrics.c_store_stored_total} />
-            <Counter label="C-STORE failed" value={metrics.c_store_failed_total} tone="danger" />
-            <Counter label="C-FIND requests / matches" value={`${metrics.c_find_requests_total} / ${metrics.c_find_matches_total}`} />
-            <Counter label="C-MOVE requests" value={metrics.c_move_requests_total} />
+            <Counter label={t("desktop-server-counter-received")} value={metrics.c_store_received_total} />
+            <Counter label={t("desktop-server-counter-stored")} value={metrics.c_store_stored_total} />
             <Counter
-              label="C-MOVE sub-ops completed / failed"
+              label={t("desktop-server-counter-failed")}
+              value={metrics.c_store_failed_total}
+              tone="danger"
+            />
+            <Counter
+              label={t("desktop-server-counter-find")}
+              value={`${metrics.c_find_requests_total} / ${metrics.c_find_matches_total}`}
+            />
+            <Counter label={t("desktop-server-counter-move")} value={metrics.c_move_requests_total} />
+            <Counter
+              label={t("desktop-server-counter-move-sub")}
               value={`${metrics.c_move_suboperations_completed_total} / ${metrics.c_move_suboperations_failed_total}`}
             />
-            <Counter label="C-GET requests" value={metrics.c_get_requests_total} />
-            <Counter label="Bytes ingested" value={formatBytes(metrics.archive_ingest_bytes_total)} />
+            <Counter label={t("desktop-server-counter-get")} value={metrics.c_get_requests_total} />
+            <Counter
+              label={t("desktop-server-counter-bytes")}
+              value={formatBytes(metrics.archive_ingest_bytes_total)}
+            />
           </div>
         ) : (
-          <div className="empty small">Loading metrics…</div>
+          <div className="empty small">{t("desktop-server-loading-metrics")}</div>
         )}
       </div>
     </>
@@ -162,12 +214,14 @@ function Metric({
   label,
   value,
   rate,
+  rateLabel,
   accent = false,
   danger = false,
 }: {
   label: string;
   value: string | number;
   rate?: number;
+  rateLabel?: string;
   accent?: boolean;
   danger?: boolean;
 }) {
@@ -175,7 +229,7 @@ function Metric({
     <div className="stat">
       <div className="label">{label}</div>
       <div className={`value${accent ? " accent" : ""}${danger ? " danger-text" : ""}`}>{value}</div>
-      {rate !== undefined && <div className="stat-foot">+{rate} / poll</div>}
+      {rate !== undefined && <div className="stat-foot">{rateLabel}</div>}
     </div>
   );
 }

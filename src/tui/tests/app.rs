@@ -72,11 +72,10 @@ fn handle_task_result_updates_query_state_and_clears_running_task() {
     assert_eq!(app.query_results.len(), 1);
     assert_eq!(app.selected_query_result, Some(0));
     assert_eq!(app.focus, FocusPane::Query);
-    assert!(app
-        .logs
-        .last()
-        .expect("log line")
-        .contains("query returned 1 matches"));
+    assert_eq!(
+        app.logs.last().cloned(),
+        Some(tr_n("tui-task-query-done", "count", 1))
+    );
 }
 
 #[test]
@@ -110,11 +109,10 @@ fn handle_task_result_clears_stale_query_results_on_query_failure() {
     assert!(app.running_task.is_none());
     assert!(app.query_results.is_empty());
     assert_eq!(app.selected_query_result, None);
-    assert!(app
-        .logs
-        .last()
-        .expect("log line")
-        .contains("query failed: boom"));
+    assert_eq!(
+        app.logs.last().cloned(),
+        Some(tr1("tui-status-query-failed", "error", "boom"))
+    );
 }
 
 #[test]
@@ -343,8 +341,10 @@ fn handle_task_result_retrieve_err_logs_failure() {
     .unwrap();
 
     assert!(app.running_task.is_none());
-    let last_log = app.logs.last().expect("log line");
-    assert!(last_log.contains("retrieve failed: connection refused"));
+    assert_eq!(
+        app.logs.last().cloned(),
+        Some(tr1("tui-status-retrieve-failed", "error", "connection refused"))
+    );
 }
 
 #[test]
@@ -420,9 +420,9 @@ fn handle_task_result_import_ok_logs_failures_and_truncates_at_five() {
     let omitted_log = app
         .logs
         .iter()
-        .find(|l| l.contains("more failures omitted"))
+        .find(|l| l.contains(&tr_n("tui-status-more-failures", "n", 2)))
         .expect("omitted count log");
-    assert!(omitted_log.contains("2 more failures omitted"));
+    assert_eq!(omitted_log.as_str(), tr_n("tui-status-more-failures", "n", 2));
 }
 
 #[test]
@@ -438,8 +438,10 @@ fn handle_task_result_import_err_logs_failure() {
         .unwrap();
 
     assert!(app.running_task.is_none());
-    let last_log = app.logs.last().expect("log line");
-    assert!(last_log.contains("import failed: disk full"));
+    assert_eq!(
+        app.logs.last().cloned(),
+        Some(tr1("tui-task-import-failed", "error", "disk full"))
+    );
 }
 
 #[test]
@@ -480,8 +482,10 @@ fn handle_task_result_send_err_logs_failure() {
         .unwrap();
 
     assert!(app.running_task.is_none());
-    let last_log = app.logs.last().expect("log line");
-    assert!(last_log.contains("send failed: node unreachable"));
+    assert_eq!(
+        app.logs.last().cloned(),
+        Some(tr1("cli-msg-send-failed", "error", "node unreachable"))
+    );
 }
 
 #[test]
@@ -499,8 +503,10 @@ fn handle_task_result_internal_error_logs_message() {
     .unwrap();
 
     assert!(app.running_task.is_none());
-    let last_log = app.logs.last().expect("log line");
-    assert!(last_log.contains("background task internal error: unexpected panic"));
+    assert_eq!(
+        app.logs.last().cloned(),
+        Some(tr1("tui-task-failed-generic", "error", "unexpected panic"))
+    );
 }
 
 #[test]

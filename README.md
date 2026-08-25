@@ -688,9 +688,18 @@ While a long-running CLI operation is running, press **Ctrl-C** to request coope
 
 - Some DICOM protocol operations do not send protocol-level DIMSE cancel/abort; cancellation is implemented primarily via cooperative checkpoints.
 
+## Localization
+
+Operator-facing UI (TUI, CLI help/about, desktop chrome, user-facing errors) is loaded from Fluent catalogs in `i18n/`. Message IDs are hyphenated Fluent identifiers (`cli-about`, `tui-pane-remote-nodes`, `desktop-nav-dashboard`, `error-import-file-too-large`). Dotted names are Fluent attributes, not message IDs. JSON/CSV machine output keeps stable English keys regardless of locale.
+
+Override locale with `--lang <BCP47>` or `DICOM_NODE_LANG`. Resolution then uses persisted config, the OS locale, and `en-US`. Missing messages fall back requested → language (`pt`) → `en-US` → the message id.
+
+To add a language, add `i18n/{locale}.ftl` with the same keys as `en-US` and run `cargo test --test i18n_catalog_coverage`. Do not edit render code or add an enum variant. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Layout
 
 ```text
+i18n/               Fluent catalogs (en-US, pt-BR, …)
 src/
   cli.rs            clap command definitions
   config.rs         application paths and config

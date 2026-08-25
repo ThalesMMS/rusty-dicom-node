@@ -15,6 +15,7 @@ use super::{
     forms::ModalState,
     render::truncate_path,
     tasks::{RunningTask, RunningTaskView, TaskId, TaskInfo, TaskRunner},
+    tr,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,43 +179,46 @@ pub(super) fn move_selection(current: Option<usize>, len: usize, delta: isize) -
 }
 
 pub(super) fn status_summary_lines(status: &TuiStatusSnapshot) -> Text<'static> {
-    let receiver_mode = if status.receiver_mode.contains("on-demand") {
-        "on-demand"
+    let receiver_mode = if status.receiver_mode == tr("tui-receiver-mode-on-demand") {
+        tr("tui-status-mode-on-demand")
     } else {
-        "standalone"
+        tr("tui-status-mode-standalone")
     };
 
     Text::from(vec![
         status_summary_line(vec![
-            ("Local AE", status.local_ae_title.clone()),
-            ("Listener", status.listener_addr.clone()),
-            ("Mode", receiver_mode.to_string()),
+            (tr("tui-status-local-ae"), status.local_ae_title.clone()),
+            (tr("tui-status-listener"), status.listener_addr.clone()),
+            (tr("tui-status-mode"), receiver_mode.to_string()),
         ]),
         status_summary_line(vec![
-            ("PDU", status.max_pdu_length.to_string()),
+            (tr("tui-status-pdu"), status.max_pdu_length.to_string()),
             (
-                "Strict",
-                if status.strict_pdu { "y" } else { "n" }.to_string(),
-            ),
-            (
-                "Promiscuous",
-                if status.allow_promiscuous_storage {
-                    "y"
+                tr("tui-status-strict"),
+                if status.strict_pdu {
+                    tr("tui-bool-yes")
                 } else {
-                    "n"
-                }
-                .to_string(),
+                    tr("tui-bool-no")
+                },
             ),
-            ("TS Pref", status.preferred_store_transfer_syntax.clone()),
+            (
+                tr("tui-status-promiscuous"),
+                if status.allow_promiscuous_storage {
+                    tr("tui-bool-yes")
+                } else {
+                    tr("tui-bool-no")
+                },
+            ),
+            (tr("tui-status-ts-pref"), status.preferred_store_transfer_syntax.clone()),
         ]),
         status_summary_line(vec![
-            ("Config", truncate_path(&status.config_path, 28)),
-            ("Data", truncate_path(&status.data_dir, 28)),
+            (tr("tui-status-config"), truncate_path(&status.config_path, 28)),
+            (tr("tui-status-data"), truncate_path(&status.data_dir, 28)),
         ]),
     ])
 }
 
-fn status_summary_line(fields: Vec<(&str, String)>) -> Line<'static> {
+fn status_summary_line(fields: Vec<(String, String)>) -> Line<'static> {
     let mut spans = Vec::new();
 
     for (index, (label, value)) in fields.into_iter().enumerate() {

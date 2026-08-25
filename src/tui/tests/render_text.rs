@@ -1,7 +1,70 @@
 use super::prelude::*;
 
+fn pin_locale(tag: &str) {
+    crate::i18n::set_thread_locale(Some(tag.parse().expect("valid BCP-47 locale")));
+}
+
+fn pin_en_us() {
+    pin_locale("en-US");
+}
+
+fn rendered_ui(app: &mut TuiApp) -> String {
+    let view = app.view();
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut list_states = TuiListStates::default();
+    terminal
+        .draw(|frame| draw_ui(frame, &view, &mut list_states))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+#[test]
+fn pane_titles_and_empty_states_follow_locale() {
+    let cases = [
+        (
+            "en-US",
+            "Remote Nodes",
+            "Local Studies",
+            "No query has been run yet.",
+        ),
+        (
+            "pt-BR",
+            "Nós remotos",
+            "Estudos locais",
+            "Nenhuma consulta foi executada ainda.",
+        ),
+    ];
+    for (locale, remote, local, empty_query) in cases {
+        pin_locale(locale);
+        let services = test_services();
+        let mut app = TuiApp::new(services.services.clone());
+        let rendered = rendered_ui(&mut app);
+        assert!(
+            rendered.contains(remote),
+            "{locale} missing pane title {remote:?} in {rendered}"
+        );
+        assert!(
+            rendered.contains(local),
+            "{locale} missing pane title {local:?}"
+        );
+        assert!(
+            rendered.contains(empty_query),
+            "{locale} missing empty query {empty_query:?}"
+        );
+        crate::i18n::set_thread_locale(None);
+    }
+}
+
 #[test]
 fn draw_ui_sets_command_cursor_from_display_width() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     app.editor.insert_str("a日b");
@@ -20,6 +83,7 @@ fn draw_ui_sets_command_cursor_from_display_width() {
 
 #[test]
 fn draw_ui_does_not_render_help_over_active_modal() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     app.modal = Some(ModalState::AddNode(NodeFormState::add()));
@@ -47,6 +111,7 @@ fn draw_ui_does_not_render_help_over_active_modal() {
 
 #[test]
 fn modal_inline_errors_hidden_until_touched_node_form() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     let mut form = NodeFormState::add();
@@ -84,6 +149,7 @@ fn modal_inline_errors_hidden_until_touched_node_form() {
 
 #[test]
 fn modal_inline_errors_visible_after_touch_node_form() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     let mut form = NodeFormState::add();
@@ -117,6 +183,7 @@ fn modal_inline_errors_visible_after_touch_node_form() {
 
 #[test]
 fn modal_inline_errors_clear_when_valid_node_form() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     let mut form = NodeFormState::add();
@@ -152,6 +219,7 @@ fn modal_inline_errors_clear_when_valid_node_form() {
 
 #[test]
 fn modal_inline_validation_query_uid_shows_only_after_touch() {
+    pin_en_us();
     let services = test_services();
     add_test_node(&services, "pacs", "PACSAE");
     let node = services.get_node("pacs").unwrap();
@@ -212,6 +280,7 @@ fn modal_inline_validation_query_uid_shows_only_after_touch() {
 
 #[test]
 fn formatting_helpers_compact_rows_and_status_lines() {
+    pin_en_us();
     assert_eq!(truncate_uid("1234567890", 6), "…67890");
     assert_eq!(pad_or_truncate("CT", 4), "CT  ");
     assert_eq!(pad_or_truncate("PATIENT-NAME", 7), "PATIENT");
@@ -239,6 +308,7 @@ fn formatting_helpers_compact_rows_and_status_lines() {
 
 #[test]
 fn footer_and_help_text_reflect_local_drill_down_state() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     app.focus = FocusPane::Local;
@@ -376,16 +446,19 @@ fn pad_or_truncate_uses_display_width_and_grapheme_boundaries() {
 
 #[test]
 fn bool_label_true_returns_yes() {
+    pin_en_us();
     assert_eq!(bool_label(true), "yes");
 }
 
 #[test]
 fn bool_label_false_returns_no() {
+    pin_en_us();
     assert_eq!(bool_label(false), "no");
 }
 
 #[test]
 fn format_node_row_contains_ae_title_and_host_port_and_name() {
+    pin_en_us();
     use crate::models::RemoteNode;
 
     let node = RemoteNode {
@@ -409,6 +482,7 @@ fn format_node_row_contains_ae_title_and_host_port_and_name() {
 
 #[test]
 fn format_node_row_shows_dash_when_no_move_destination() {
+    pin_en_us();
     use crate::models::RemoteNode;
 
     let node = RemoteNode {
@@ -429,6 +503,7 @@ fn format_node_row_shows_dash_when_no_move_destination() {
 
 #[test]
 fn format_study_row_contains_key_fields() {
+    pin_en_us();
     use crate::models::StudySummary;
 
     let study = StudySummary {
@@ -444,15 +519,15 @@ fn format_study_row_contains_key_fields() {
 
     let row = format_study_row(&study);
     assert!(row.contains("DOE^JANE"));
-    assert!(row.contains("20240101"));
+    assert!(row.contains("01/01/2024"));
+    assert!(!row.contains("20240101"));
     assert!(row.contains("CT"));
-    // series_count and instance_count appear in the row formatted as " 2s/5  i"
-    assert!(row.contains("2s/"));
-    assert!(row.contains("5"));
+    assert!(row.contains("2s/5i") || row.contains("2s/5"));
 }
 
 #[test]
 fn format_query_result_row_contains_level_and_patient_name() {
+    pin_en_us();
     let item = QueryMatch {
         level: QueryLevel::Study,
         patient_name: Some("DOE^JANE".to_string()),
@@ -478,6 +553,7 @@ fn format_query_result_row_contains_level_and_patient_name() {
 
 #[test]
 fn format_series_row_contains_series_number_and_modality() {
+    pin_en_us();
     use crate::models::SeriesSummary;
 
     let series = SeriesSummary {
@@ -497,7 +573,33 @@ fn format_series_row_contains_series_number_and_modality() {
 }
 
 #[test]
+fn format_study_row_formats_dates_for_locale() {
+    use crate::models::StudySummary;
+    let study = StudySummary {
+        study_instance_uid: "1.2.840.10008.5.1.9999".to_string(),
+        patient_name: Some("DOE^JANE".to_string()),
+        patient_id: Some("MRN-1".to_string()),
+        study_date: Some("20240309".to_string()),
+        study_description: Some("Head CT".to_string()),
+        modalities: Some("CT".to_string()),
+        series_count: 1,
+        instance_count: 1,
+    };
+
+    pin_locale("en-US");
+    let en = format_study_row(&study);
+    assert!(en.contains("03/09/2024"), "en-US row: {en}");
+    assert!(!en.contains("20240309"), "en-US should not show raw DA: {en}");
+
+    pin_locale("pt-BR");
+    let pt = format_study_row(&study);
+    assert!(pt.contains("09/03/2024"), "pt-BR row: {pt}");
+    crate::i18n::set_thread_locale(None);
+}
+
+#[test]
 fn query_results_empty_text_shows_no_query_message_when_no_context() {
+    pin_en_us();
     let text = query_results_empty_text(None);
     let plain = text
         .lines
@@ -510,6 +612,7 @@ fn query_results_empty_text_shows_no_query_message_when_no_context() {
 
 #[test]
 fn query_results_empty_text_shows_last_query_target_when_context_provided() {
+    pin_en_us();
     let text = query_results_empty_text(Some("my-pacs-node"));
     let plain = text
         .lines
@@ -522,6 +625,7 @@ fn query_results_empty_text_shows_last_query_target_when_context_provided() {
 
 #[test]
 fn footer_status_text_shows_running_task_description() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     app.running_task = Some(RunningTask {
@@ -537,6 +641,7 @@ fn footer_status_text_shows_running_task_description() {
 
 #[test]
 fn footer_status_text_shows_nodes_shortcuts_in_nodes_pane() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     app.focus = FocusPane::Nodes;
@@ -550,6 +655,7 @@ fn footer_status_text_shows_nodes_shortcuts_in_nodes_pane() {
 
 #[test]
 fn footer_status_text_shows_retrieve_hint_in_query_pane() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     app.focus = FocusPane::Query;
@@ -562,6 +668,7 @@ fn footer_status_text_shows_retrieve_hint_in_query_pane() {
 
 #[test]
 fn footer_status_text_shows_run_command_hint_in_input_pane() {
+    pin_en_us();
     let services = test_services();
     let mut app = TuiApp::new(services.services.clone());
     // default focus is Input

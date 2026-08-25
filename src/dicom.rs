@@ -38,10 +38,14 @@ pub fn get_str_opt_from_mem(obj: &DefaultMemObject, tag: Tag) -> Option<String> 
 
 pub fn required_str(file_obj: &DefaultFileObject, tag: Tag) -> Result<String> {
     get_str_opt(file_obj, tag).ok_or_else(|| {
+        let group = format!("{:04X}", tag.0);
+        let element = format!("{:04X}", tag.1);
         anyhow!(
-            "required DICOM attribute missing: ({:04X},{:04X})",
-            tag.0,
-            tag.1
+            "{}",
+            crate::error::msg_with(
+                "error-dicom-required-attribute",
+                [("group", group.as_str()), ("element", element.as_str())],
+            )
         )
     })
 }
@@ -309,7 +313,10 @@ pub fn inspect_file_identity(file_obj: &DefaultFileObject) -> Result<(String, St
     let transfer_syntax_uid = file_obj.meta().transfer_syntax().to_string();
 
     if sop_class_uid.is_empty() || sop_instance_uid.is_empty() || transfer_syntax_uid.is_empty() {
-        return Err(anyhow!("DICOM file meta is incomplete"));
+        return Err(anyhow!(
+            "{}",
+            crate::error::msg("error-dicom-meta-incomplete")
+        ));
     }
 
     Ok((sop_class_uid, sop_instance_uid, transfer_syntax_uid))
@@ -351,12 +358,16 @@ where
 
 pub fn ensure_study_for_series_or_image(request: &MoveRequest) -> Result<()> {
     if request.study_instance_uid.trim().is_empty() {
-        return Err(anyhow!("study_instance_uid is required"));
+        return Err(anyhow!(
+            "{}",
+            crate::error::msg("error-dicom-study-uid-required")
+        ));
     }
 
     match request.level {
         QueryLevel::Patient => Err(anyhow!(
-            "patient-level C-MOVE is not supported by this client scaffold"
+            "{}",
+            crate::error::msg("error-dicom-patient-move-unsupported")
         )),
         QueryLevel::Study => Ok(()),
         QueryLevel::Series => {
@@ -367,7 +378,8 @@ pub fn ensure_study_for_series_or_image(request: &MoveRequest) -> Result<()> {
                 .is_empty()
             {
                 return Err(anyhow!(
-                    "series_instance_uid is required for series-level retrieve"
+                    "{}",
+                    crate::error::msg("error-dicom-series-uid-required-series")
                 ));
             }
             Ok(())
@@ -380,18 +392,20 @@ pub fn ensure_study_for_series_or_image(request: &MoveRequest) -> Result<()> {
                 .is_empty()
             {
                 return Err(anyhow!(
-                    "series_instance_uid is required for image-level retrieve"
+                    "{}",
+                    crate::error::msg("error-dicom-series-uid-required-image")
                 ));
             }
             if request.sop_instance_uid.as_deref().unwrap_or("").is_empty() {
                 return Err(anyhow!(
-                    "sop_instance_uid is required for image-level retrieve"
+                    "{}",
+                    crate::error::msg("error-dicom-sop-uid-required-image")
                 ));
             }
             Ok(())
         }
     }
-    .context("validating move request")
+    .context(crate::error::msg("error-dicom-validating-move"))
 }
 
 #[cfg(test)]

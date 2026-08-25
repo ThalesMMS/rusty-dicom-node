@@ -6,6 +6,9 @@ use dicom_node_client::summary_render::render_human;
 
 #[test]
 fn render_human_includes_key_sections() {
+    dicom_node_client::i18n::set_thread_locale(Some(
+        "en-US".parse().expect("valid BCP-47 locale"),
+    ));
     let mut s = OperationSummary::new(OperationKind::QueryFind, 1234, OperationStatus::Success);
     s.peer = Some(NetworkPeer {
         host: "127.0.0.1".to_string(),

@@ -17,6 +17,10 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
+fluent-bundle = "0.16"
+rust-embed = "8"
+sys-locale = "0.3"
+unic-langid = "0.9"
 directories = "5"
 ratatui = "0.30"
 rusqlite = { version = "0.37", features = ["bundled"] }

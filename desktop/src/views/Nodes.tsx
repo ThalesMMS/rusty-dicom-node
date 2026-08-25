@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Edit3, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { addNode, deleteNode, listNodes, updateNode } from "../api";
+import { useI18n } from "../i18n";
+import type { Translate } from "../i18n";
 import type { NodeDraft, RemoteNode } from "../types";
 
 const EMPTY: NodeDraft = {
@@ -13,6 +15,7 @@ const EMPTY: NodeDraft = {
 };
 
 export default function Nodes() {
+  const { t, locale } = useI18n();
   const [nodes, setNodes] = useState<RemoteNode[]>([]);
   const [draft, setDraft] = useState<NodeDraft>(EMPTY);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -20,7 +23,7 @@ export default function Nodes() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const validation = useMemo(() => validateDraft(draft), [draft]);
+  const validation = useMemo(() => validateDraft(draft, t), [draft, t]);
   const canSubmit = validation.length === 0 && !busy;
 
   const refresh = () => listNodes().then(setNodes).catch((e) => setError(String(e)));
@@ -57,10 +60,10 @@ export default function Nodes() {
     try {
       if (editingId) {
         const updated = await updateNode(editingId, draft);
-        setNotice(`Updated node "${updated.name}".`);
+        setNotice(t("desktop-nodes-updated", { name: updated.name }));
       } else {
         const created = await addNode(draft);
-        setNotice(`Added node "${created.name}".`);
+        setNotice(t("desktop-nodes-added", { name: created.name }));
       }
       reset();
       await refresh();
@@ -72,13 +75,13 @@ export default function Nodes() {
   };
 
   const remove = async (node: RemoteNode) => {
-    if (!confirm(`Delete node "${node.name}"?`)) return;
+    if (!confirm(t("desktop-nodes-confirm-delete", { name: node.name }))) return;
     setError(null);
     setNotice(null);
     try {
       await deleteNode(node.id);
       if (editingId === node.id) reset();
-      setNotice(`Deleted node "${node.name}".`);
+      setNotice(t("desktop-nodes-deleted", { name: node.name }));
       await refresh();
     } catch (err) {
       setError(String(err));
@@ -89,8 +92,8 @@ export default function Nodes() {
     <>
       <div className="page-header compact">
         <div>
-          <h1>Remote Nodes</h1>
-          <p>PACS and workstation peers for query, retrieve, and store operations.</p>
+          <h1>{t("desktop-nodes-title")}</h1>
+          <p>{t("desktop-nodes-subtitle")}</p>
         </div>
       </div>
 
@@ -99,39 +102,39 @@ export default function Nodes() {
 
       <div className="workspace-grid">
         <section className="card">
-          <h2>{editingId ? "Edit node" : "Add node"}</h2>
+          <h2>{editingId ? t("desktop-nodes-edit") : t("desktop-nodes-add")}</h2>
           <form onSubmit={submit}>
             <div className="form-grid compact">
               <div className="field">
-                <label>Name</label>
+                <label>{t("desktop-nodes-name")}</label>
                 <input
                   required
-                  placeholder="main-pacs"
+                  placeholder={t("desktop-nodes-placeholder-name")}
                   value={draft.name}
                   onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 />
               </div>
               <div className="field">
-                <label>AE title</label>
+                <label>{t("desktop-nodes-ae-title")}</label>
                 <input
                   required
-                  placeholder="PACS01"
+                  placeholder={t("desktop-nodes-placeholder-ae")}
                   maxLength={16}
                   value={draft.ae_title}
                   onChange={(e) => setDraft({ ...draft, ae_title: e.target.value })}
                 />
               </div>
               <div className="field">
-                <label>Host</label>
+                <label>{t("desktop-nodes-host")}</label>
                 <input
                   required
-                  placeholder="192.168.0.10"
+                  placeholder={t("desktop-nodes-placeholder-host")}
                   value={draft.host}
                   onChange={(e) => setDraft({ ...draft, host: e.target.value })}
                 />
               </div>
               <div className="field">
-                <label>Port</label>
+                <label>{t("desktop-nodes-port")}</label>
                 <input
                   required
                   type="number"
@@ -142,9 +145,9 @@ export default function Nodes() {
                 />
               </div>
               <div className="field">
-                <label>Move destination</label>
+                <label>{t("desktop-nodes-move-dest")}</label>
                 <input
-                  placeholder="Defaults to local AE"
+                  placeholder={t("desktop-nodes-placeholder-move")}
                   value={draft.move_destination ?? ""}
                   onChange={(e) =>
                     setDraft({ ...draft, move_destination: e.target.value || null })
@@ -152,9 +155,9 @@ export default function Nodes() {
                 />
               </div>
               <div className="field">
-                <label>Notes</label>
+                <label>{t("desktop-nodes-notes")}</label>
                 <input
-                  placeholder="Reading room PACS"
+                  placeholder={t("desktop-nodes-placeholder-notes")}
                   value={draft.notes ?? ""}
                   onChange={(e) => setDraft({ ...draft, notes: e.target.value || null })}
                 />
@@ -170,12 +173,12 @@ export default function Nodes() {
             <div className="toolbar" style={{ marginTop: 14 }}>
               <button type="submit" className="btn primary" disabled={!canSubmit}>
                 {editingId ? <Edit3 size={15} /> : <Plus size={15} />}
-                {editingId ? "Save changes" : "Add node"}
+                {editingId ? t("desktop-nodes-save") : t("desktop-nodes-add")}
               </button>
               {editingId && (
                 <button type="button" className="btn ghost" onClick={reset}>
                   <RotateCcw size={15} />
-                  Cancel
+                  {t("desktop-common-cancel")}
                 </button>
               )}
             </div>
@@ -183,18 +186,17 @@ export default function Nodes() {
         </section>
 
         <aside className="card">
-          <h2>Node summary</h2>
+          <h2>{t("desktop-nodes-summary")}</h2>
           <div className="metric-list">
             <div className="counter-row">
-              <span>Total nodes</span>
-              <strong>{nodes.length}</strong>
+              <span>{t("count-nodes", { n: nodes.length })}</span>
             </div>
             <div className="counter-row">
-              <span>With move destination</span>
+              <span>{t("desktop-nodes-with-move")}</span>
               <strong>{nodes.filter((node) => !!node.preferred_move_destination).length}</strong>
             </div>
             <div className="counter-row">
-              <span>Default port 104</span>
+              <span>{t("desktop-nodes-port-104")}</span>
               <strong>{nodes.filter((node) => node.port === 104).length}</strong>
             </div>
           </div>
@@ -202,17 +204,17 @@ export default function Nodes() {
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
-        <h2>Configured nodes</h2>
+        <h2>{t("desktop-nodes-configured")}</h2>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Name</th>
-                <th>AE Title</th>
-                <th>Endpoint</th>
-                <th>Move dest.</th>
-                <th>Notes</th>
-                <th>Updated</th>
+                <th>{t("desktop-table-name")}</th>
+                <th>{t("desktop-table-ae-title")}</th>
+                <th>{t("desktop-table-endpoint")}</th>
+                <th>{t("desktop-table-move-dest")}</th>
+                <th>{t("desktop-table-notes")}</th>
+                <th>{t("desktop-table-updated")}</th>
                 <th />
               </tr>
             </thead>
@@ -220,7 +222,7 @@ export default function Nodes() {
               {nodes.length === 0 && (
                 <tr>
                   <td colSpan={7} className="empty">
-                    No remote nodes yet.
+                    {t("desktop-nodes-empty")}
                   </td>
                 </tr>
               )}
@@ -231,12 +233,12 @@ export default function Nodes() {
                   <td className="mono">{node.host}:{node.port}</td>
                   <td className="mono dim">{node.preferred_move_destination ?? "—"}</td>
                   <td className="dim">{node.notes ?? "—"}</td>
-                  <td className="dim">{new Date(node.updated_at).toLocaleString()}</td>
+                  <td className="dim">{new Date(node.updated_at).toLocaleString(locale)}</td>
                   <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
-                    <button className="icon-btn" title="Edit node" onClick={() => startEdit(node)}>
+                    <button className="icon-btn" title={t("desktop-nodes-edit-title")} onClick={() => startEdit(node)}>
                       <Edit3 size={15} />
                     </button>{" "}
-                    <button className="icon-btn danger" title="Delete node" onClick={() => remove(node)}>
+                    <button className="icon-btn danger" title={t("desktop-nodes-delete-title")} onClick={() => remove(node)}>
                       <Trash2 size={15} />
                     </button>
                   </td>
@@ -250,14 +252,14 @@ export default function Nodes() {
   );
 }
 
-function validateDraft(draft: NodeDraft): string[] {
+function validateDraft(draft: NodeDraft, t: Translate): string[] {
   const hints: string[] = [];
-  if (!draft.name.trim()) hints.push("Name is required.");
-  if (!draft.ae_title.trim()) hints.push("AE title is required.");
-  if (draft.ae_title.length > 16) hints.push("AE title must be 16 characters or fewer.");
-  if (!draft.host.trim()) hints.push("Host is required.");
+  if (!draft.name.trim()) hints.push(t("desktop-nodes-need-name"));
+  if (!draft.ae_title.trim()) hints.push(t("desktop-nodes-need-ae"));
+  if (draft.ae_title.length > 16) hints.push(t("desktop-nodes-ae-length"));
+  if (!draft.host.trim()) hints.push(t("desktop-nodes-need-host"));
   if (!Number.isInteger(draft.port) || draft.port < 1 || draft.port > 65535) {
-    hints.push("Port must be 1-65535.");
+    hints.push(t("desktop-nodes-port-range"));
   }
   return hints;
 }

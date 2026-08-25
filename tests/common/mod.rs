@@ -2,6 +2,7 @@
 
 pub mod dicom_files;
 pub mod harness;
+pub mod i18n_ftl;
 pub mod services;
 pub mod timeout;
 

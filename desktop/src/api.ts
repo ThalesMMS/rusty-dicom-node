@@ -102,13 +102,30 @@ export const formatBytes = (bytes: number): string => {
   return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 };
 
-export const formatDicomDate = (value: string | null | undefined): string => {
+export const formatDicomDate = (
+  value: string | null | undefined,
+  locale?: string,
+): string => {
   if (!value) return "—";
-  const digits = value.replaceAll("-", "");
-  if (/^\d{8}$/.test(digits)) {
-    return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  const trimmed = value.trim();
+  const range = /^(\d{8})-(\d{8})$/.exec(trimmed);
+  if (range) {
+    return `${formatDicomDate(range[1], locale)} – ${formatDicomDate(range[2], locale)}`;
   }
-  return value;
+  const digits = trimmed.replaceAll("-", "");
+  if (/^\d{8}$/.test(digits)) {
+    const year = Number(digits.slice(0, 4));
+    const month = Number(digits.slice(4, 6));
+    const day = Number(digits.slice(6, 8));
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (Number.isNaN(date.getTime())) return trimmed;
+    const tag =
+      locale ??
+      (typeof document !== "undefined" ? document.documentElement.lang : undefined) ??
+      "en-US";
+    return new Intl.DateTimeFormat(tag, { dateStyle: "medium", timeZone: "UTC" }).format(date);
+  }
+  return trimmed;
 };
 
 export const formatPersonName = (value: string | null | undefined): string => {

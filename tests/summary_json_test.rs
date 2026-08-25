@@ -33,6 +33,7 @@ fn summary_json_is_stable() {
 
     let v = serde_json::to_value(&s).unwrap();
 
+    // Machine JSON keys stay English snake_case even after UI localization.
     // Top-level fields (explicitly asserted to prevent accidental renames/removals)
     assert_eq!(v["version"], 1);
     assert_eq!(v["kind"], "retrieve_move");
@@ -61,4 +62,48 @@ fn summary_json_is_stable() {
 
     // Logs default to absent (because empty vec is skipped)
     assert!(v.get("logs").is_none());
+}
+
+#[test]
+fn summary_json_field_names_stay_english_machine_keys() {
+    let mut s = OperationSummary::new(OperationKind::QueryFind, 10, OperationStatus::Success);
+    s.peer = Some(NetworkPeer {
+        host: "pacs".to_string(),
+        port: 104,
+    });
+    s.failures.push(FailureDetail {
+        message: "unused".to_string(),
+        code: Some("0x0000".to_string()),
+    });
+
+    let v = serde_json::to_value(&s).unwrap();
+    let top = v.as_object().expect("summary JSON object");
+    for key in [
+        "version",
+        "kind",
+        "duration_ms",
+        "status",
+        "peer",
+        "counts",
+        "failures",
+    ] {
+        assert!(
+            top.contains_key(key),
+            "machine JSON must keep English key '{key}', got {:?}",
+            top.keys().collect::<Vec<_>>()
+        );
+    }
+
+    let peer = v["peer"].as_object().expect("peer object");
+    assert!(peer.contains_key("host"));
+    assert!(peer.contains_key("port"));
+    assert!(!peer.contains_key("hospedeiro"));
+    assert!(!peer.contains_key("puerto"));
+
+    let failure = v["failures"][0].as_object().expect("failure object");
+    assert!(failure.contains_key("message"));
+    assert!(failure.contains_key("code"));
+
+    assert_eq!(v["kind"], "query_find");
+    assert_eq!(v["status"], "success");
 }

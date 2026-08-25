@@ -5,11 +5,10 @@ use super::{
     format_instance_row, format_node_row, format_query_result_row, format_series_row,
     format_study_row, local_instances_empty_text, local_series_empty_text,
     local_studies_empty_text, pane_title_text, query_results_empty_text, remote_nodes_empty_text,
-    render_detail_pane, render_help_modal, render_modal, status_summary_lines,
+    render_detail_pane, render_help_modal, render_modal, status_summary_lines, tr, tr1, tr2,
     truncate_tail_with_ellipsis, truncate_uid, Alignment, Block, Borders, Constraint, Direction,
     FocusPane, Frame, Layout, Line, List, ListItem, ListState, Modifier, Paragraph, Rect, Span,
     Style, TaskListScope, TaskStatus, Text, TuiView, Wrap, MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH,
-    TERMINAL_TOO_SMALL_MESSAGE,
 };
 
 const MAX_VISIBLE_LOGS: usize = 24;
@@ -167,7 +166,7 @@ pub(in crate::tui) fn draw_ui(
         frame,
         left[0],
         SelectableListConfig {
-            title: pane_title_text("Remote Nodes", view.focus == FocusPane::Nodes),
+            title: pane_title_text(&tr("tui-pane-remote-nodes"), view.focus == FocusPane::Nodes),
             active: view.focus == FocusPane::Nodes,
             items: view.nodes,
             selected: view.selected_node,
@@ -181,15 +180,19 @@ pub(in crate::tui) fn draw_ui(
         let series_uid = view
             .selected_local_series
             .and_then(|index| view.local_series.get(index))
-            .map(|series| series.series_instance_uid.as_str())
-            .unwrap_or("<unknown series>");
+            .map(|series| series.series_instance_uid.clone())
+            .unwrap_or_else(|| tr("common-unknown-series"));
 
         render_selectable_list(
             frame,
             left[1],
             SelectableListConfig {
                 title: pane_title_text(
-                    &format!("Instances for: {}", truncate_uid(series_uid, 20)),
+                    &tr1(
+                        "tui-pane-instances-for",
+                        "uid",
+                        truncate_uid(&series_uid, 20),
+                    ),
                     view.focus == FocusPane::Local,
                 ),
                 active: view.focus == FocusPane::Local,
@@ -204,8 +207,8 @@ pub(in crate::tui) fn draw_ui(
         let local_title = view
             .drill_down_study_uid
             .as_ref()
-            .map(|study_uid| format!("Series for: {}", truncate_uid(study_uid, 20)))
-            .unwrap_or_else(|| "Series for: <unknown study>".to_string());
+            .map(|study_uid| tr1("tui-pane-series-for", "uid", truncate_uid(study_uid, 20)))
+            .unwrap_or_else(|| tr("common-unknown-study"));
 
         render_selectable_list(
             frame,
@@ -225,7 +228,7 @@ pub(in crate::tui) fn draw_ui(
             frame,
             left[1],
             SelectableListConfig {
-                title: pane_title_text("Local Studies", view.focus == FocusPane::Local),
+                title: pane_title_text(&tr("tui-pane-local-studies"), view.focus == FocusPane::Local),
                 active: view.focus == FocusPane::Local,
                 items: view.local_studies,
                 selected: view.selected_local_study,
@@ -240,7 +243,7 @@ pub(in crate::tui) fn draw_ui(
     frame.render_widget(
         Paragraph::new(config_lines).block(
             Block::default()
-                .title(pane_title_text("Config", view.focus == FocusPane::Config))
+                .title(pane_title_text(&tr("tui-pane-config"), view.focus == FocusPane::Config))
                 .borders(Borders::ALL)
                 .style(active_block_style(view.focus == FocusPane::Config)),
         ),
@@ -251,7 +254,7 @@ pub(in crate::tui) fn draw_ui(
         frame,
         right[0],
         SelectableListConfig {
-            title: pane_title_text("Query / Retrieve Results", view.focus == FocusPane::Query),
+            title: pane_title_text(&tr("tui-pane-query-retrieve-results"), view.focus == FocusPane::Query),
             active: view.focus == FocusPane::Query,
             items: view.query_results,
             selected: view.selected_query_result,
@@ -276,7 +279,7 @@ pub(in crate::tui) fn draw_ui(
 
     let input_text = if view.input_content.is_empty() {
         Text::from(Line::from(Span::styled(
-            "Type a command or use pane shortcuts.",
+            tr("tui-input-placeholder"),
             Style::default(),
         )))
     } else {
@@ -287,7 +290,7 @@ pub(in crate::tui) fn draw_ui(
     frame.render_widget(
         Paragraph::new(input_text).block(
             Block::default()
-                .title(pane_title_text("Command", view.focus == FocusPane::Input))
+                .title(pane_title_text(&tr("tui-pane-command"), view.focus == FocusPane::Input))
                 .borders(Borders::ALL)
                 .style(active_block_style(view.focus == FocusPane::Input)),
         ),
@@ -371,7 +374,7 @@ pub(in crate::tui) fn render_terminal_too_small(frame: &mut Frame<'_>, area: Rec
     };
 
     frame.render_widget(
-        Paragraph::new(TERMINAL_TOO_SMALL_MESSAGE)
+        Paragraph::new(tr("tui-terminal-too-small"))
             .alignment(Alignment::Center)
             .style(Style::default().add_modifier(Modifier::BOLD)),
         message_area,
@@ -389,12 +392,12 @@ pub(super) struct SelectableListConfig<'a, T, F> {
 
 fn task_row_text(task: &super::TaskInfo) -> String {
     let status = match task.status {
-        TaskStatus::Queued => "queued",
-        TaskStatus::Running => "running",
-        TaskStatus::Cancelling => "cancelling",
-        TaskStatus::Succeeded => "ok",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Queued => tr("tui-task-status-queued"),
+        TaskStatus::Running => tr("tui-task-status-running"),
+        TaskStatus::Cancelling => tr("tui-task-status-cancelling"),
+        TaskStatus::Succeeded => tr("tui-task-status-ok"),
+        TaskStatus::Failed => tr("tui-task-status-failed"),
+        TaskStatus::Cancelled => tr("tui-task-status-cancelled"),
     };
 
     format!("#{} [{}] {}", task.id, status, task.description)
@@ -402,8 +405,8 @@ fn task_row_text(task: &super::TaskInfo) -> String {
 
 fn render_tasks_pane(frame: &mut Frame<'_>, area: Rect, view: &TuiView, state: &mut ListState) {
     let title = match view.selected_task_scope {
-        TaskListScope::Queued => "Tasks (queued)",
-        TaskListScope::History => "Tasks (history)",
+        TaskListScope::Queued => tr("tui-pane-tasks-queued"),
+        TaskListScope::History => tr("tui-pane-tasks-history"),
     };
 
     let (items, selected) = match view.selected_task_scope {
@@ -415,14 +418,14 @@ fn render_tasks_pane(frame: &mut Frame<'_>, area: Rect, view: &TuiView, state: &
         frame,
         area,
         SelectableListConfig {
-            title: pane_title_text(title, view.focus == FocusPane::Tasks),
+            title: pane_title_text(&title, view.focus == FocusPane::Tasks),
             active: view.focus == FocusPane::Tasks,
             items,
             selected,
             format_item: task_row_text,
             empty_text: Text::from(Line::from(match view.selected_task_scope {
-                TaskListScope::Queued => "No queued tasks.",
-                TaskListScope::History => "No task history.",
+                TaskListScope::Queued => tr("tui-empty-tasks-queued"),
+                TaskListScope::History => tr("tui-empty-tasks-history"),
             })),
         },
         state,
@@ -451,6 +454,7 @@ mod tests {
 
     #[test]
     fn task_row_text_formats_status_and_description() {
+        crate::i18n::set_thread_locale(Some("en-US".parse().expect("valid locale")));
         let sample = task(12, TaskStatus::Queued, "Import studies");
         assert_eq!(task_row_text(&sample), "#12 [queued] Import studies");
 
@@ -642,11 +646,17 @@ pub(in crate::tui) fn render_logs(
             .block(
                 Block::default()
                     .title(pane_title_text(
-                        &format!(
-                            "Logs ({shown}/{total}{capped_suffix})",
-                            total = logs.len(),
-                            capped_suffix = if capped { " capped" } else { "" }
-                        ),
+                        &if capped {
+                            tr2("tui-pane-logs-capped", "shown", shown, "total", logs.len())
+                        } else {
+                            tr2(
+                                "tui-pane-logs-uncapped",
+                                "shown",
+                                shown,
+                                "total",
+                                logs.len(),
+                            )
+                        },
                         active,
                     ))
                     .borders(Borders::ALL)

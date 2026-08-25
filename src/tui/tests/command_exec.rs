@@ -127,7 +127,7 @@ fn execute_command_refresh_logs_refreshed() {
 
     app.execute_command("refresh").unwrap();
 
-    assert_eq!(app.logs.last().map(String::as_str), Some("refreshed"));
+    assert_eq!(app.logs.last().cloned(), Some(tr("tui-log-refreshed")));
 }
 
 #[test]
@@ -138,8 +138,8 @@ fn execute_command_cancel_logs_when_no_active_task() {
     app.execute_command("cancel").unwrap();
 
     assert_eq!(
-        app.logs.last().map(String::as_str),
-        Some("No active task to cancel (nothing is running)")
+        app.logs.last().cloned(),
+        Some(tr("tui-status-no-active-task"))
     );
 }
 
@@ -151,8 +151,8 @@ fn execute_command_stop_alias_routes_to_cancel() {
     app.execute_command("stop").unwrap();
 
     assert_eq!(
-        app.logs.last().map(String::as_str),
-        Some("No active task to cancel (nothing is running)")
+        app.logs.last().cloned(),
+        Some(tr("tui-status-no-active-task"))
     );
 }
 

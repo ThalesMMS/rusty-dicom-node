@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU16, Ordering},
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use dicom_dictionary_std::{tags, uids};
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_ul::{
@@ -128,16 +128,24 @@ impl RetrieveProvider {
         presentation_context_id: u8,
     ) -> Result<MoveCommand> {
         let message_id = read_u16_opt_from_mem(command, tags::MESSAGE_ID)
-            .ok_or_else(|| anyhow!("missing C-MOVE message id"))?;
+            .ok_or_else(|| {
+                crate::net::err_with("error-net-missing-message-id", [("operation", "C-MOVE")])
+            })?;
         let sop_class_uid = command
             .element(tags::AFFECTED_SOP_CLASS_UID)
-            .context("missing C-MOVE affected SOP class UID")?
+            .context(crate::error::msg_with(
+                "error-net-missing-affected-sop",
+                [("operation", "C-MOVE")],
+            ))?
             .to_str()
-            .context("invalid C-MOVE affected SOP class UID")?
+            .context(crate::error::msg_with(
+                "error-net-invalid-affected-sop",
+                [("operation", "C-MOVE")],
+            ))?
             .trim_end_matches('\0')
             .to_string();
         let move_destination = get_str_opt_from_mem(command, tags::MOVE_DESTINATION)
-            .ok_or_else(|| anyhow!("missing C-MOVE destination"))?;
+            .ok_or_else(|| crate::net::err("error-net-missing-destination"))?;
 
         Ok(MoveCommand {
             message_id,
@@ -153,12 +161,20 @@ impl RetrieveProvider {
         presentation_context_id: u8,
     ) -> Result<GetCommand> {
         let message_id = read_u16_opt_from_mem(command, tags::MESSAGE_ID)
-            .ok_or_else(|| anyhow!("missing C-GET message id"))?;
+            .ok_or_else(|| {
+                crate::net::err_with("error-net-missing-message-id", [("operation", "C-GET")])
+            })?;
         let sop_class_uid = command
             .element(tags::AFFECTED_SOP_CLASS_UID)
-            .context("missing C-GET affected SOP class UID")?
+            .context(crate::error::msg_with(
+                "error-net-missing-affected-sop",
+                [("operation", "C-GET")],
+            ))?
             .to_str()
-            .context("invalid C-GET affected SOP class UID")?
+            .context(crate::error::msg_with(
+                "error-net-invalid-affected-sop",
+                [("operation", "C-GET")],
+            ))?
             .trim_end_matches('\0')
             .to_string();
 
@@ -181,18 +197,22 @@ impl RetrieveProvider {
             .iter()
             .find(|context| context.id == move_command.presentation_context_id)
             .ok_or_else(|| {
-                anyhow!(
-                    "missing negotiated presentation context {}",
-                    move_command.presentation_context_id
+                let id = move_command.presentation_context_id.to_string();
+                crate::net::err_with(
+                    "error-net-no-presentation-context-id",
+                    [("id", id.as_str())],
                 )
             })?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
 
         let identifier =
             match DefaultMemObject::read_dataset_with_ts(identifier_bytes, transfer_syntax)
-                .context("reading C-MOVE identifier")
+                .context(crate::error::msg_with(
+                    "error-net-reading-identifier",
+                    [("operation", "C-MOVE")],
+                ))
             {
                 Ok(identifier) => identifier,
                 Err(err) => {
@@ -258,18 +278,22 @@ impl RetrieveProvider {
             .iter()
             .find(|context| context.id == get_command.presentation_context_id)
             .ok_or_else(|| {
-                anyhow!(
-                    "missing negotiated presentation context {}",
-                    get_command.presentation_context_id
+                let id = get_command.presentation_context_id.to_string();
+                crate::net::err_with(
+                    "error-net-no-presentation-context-id",
+                    [("id", id.as_str())],
                 )
             })?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
 
         let identifier =
             match DefaultMemObject::read_dataset_with_ts(identifier_bytes, transfer_syntax)
-                .context("reading C-GET identifier")
+                .context(crate::error::msg_with(
+                    "error-net-reading-identifier",
+                    [("operation", "C-GET")],
+                ))
             {
                 Ok(identifier) => identifier,
                 Err(err) => {
@@ -341,13 +365,23 @@ impl RetrieveProvider {
         operation: &str,
     ) -> Result<ArchiveRetrieveRequest> {
         let level_value = get_str_opt_from_mem(identifier, tags::QUERY_RETRIEVE_LEVEL)
-            .ok_or_else(|| anyhow!("{operation} identifier is missing QueryRetrieveLevel"))?;
+            .ok_or_else(|| {
+                crate::net::err_with(
+                    "error-net-missing-qr-level",
+                    [("operation", operation)],
+                )
+            })?;
         let level = match level_value.as_str() {
             "PATIENT" => QueryLevel::Patient,
             "STUDY" => QueryLevel::Study,
             "SERIES" => QueryLevel::Series,
             "IMAGE" => QueryLevel::Image,
-            other => return Err(anyhow!("unsupported QueryRetrieveLevel: {other}")),
+            other => {
+                return Err(crate::net::err_with(
+                    "error-net-unsupported-qr-level",
+                    [("level", other)],
+                ))
+            }
         };
 
         Ok(ArchiveRetrieveRequest {
@@ -489,15 +523,17 @@ impl RetrieveProvider {
             &source_transfer_syntax_uid,
         )
         .ok_or_else(|| {
-            anyhow!(
-                "no negotiated C-GET storage presentation context for SOP Class {} and transfer syntax {}",
-                sop_class_uid,
-                source_transfer_syntax_uid
+            crate::net::err_with(
+                "error-net-no-cget-store-context",
+                [
+                    ("sop", sop_class_uid.as_str()),
+                    ("syntax", source_transfer_syntax_uid.as_str()),
+                ],
             )
         })?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
         let command = create_store_request_command(
             self.next_get_store_message_id(),
             &sop_class_uid,
@@ -523,23 +559,28 @@ impl RetrieveProvider {
             &source_transfer_syntax_uid,
             &negotiated_transfer_syntax,
         ) {
-            let file_obj = dicom_object::open_file(&path)
-                .with_context(|| format!("opening {}", path.display()))?;
+            let file_obj = dicom_object::open_file(&path).with_context(|| {
+                let path = path.display().to_string();
+                crate::error::msg_with("error-net-opening-path", [("path", path.as_str())])
+            })?;
             let mut dataset_bytes = Vec::new();
             file_obj
                 .write_dataset_with_ts(&mut dataset_bytes, transfer_syntax)
                 .with_context(|| {
-                    format!(
-                        "serializing C-GET suboperation dataset for {}",
-                        path.display()
+                    let path = path.display().to_string();
+                    crate::error::msg_with(
+                        "error-net-serializing-cget-dataset",
+                        [("path", path.as_str())],
                     )
                 })?;
             send_dataset_bytes_on_server(association, presentation_context_id, &dataset_bytes)?;
         } else {
-            return Err(anyhow!(
-                "cannot send source transfer syntax {} with negotiated transfer syntax {}",
-                source_transfer_syntax_uid,
-                negotiated_transfer_syntax
+            return Err(crate::net::err_with(
+                "error-net-cannot-send-transfer-syntax",
+                [
+                    ("source", source_transfer_syntax_uid.as_str()),
+                    ("negotiated", negotiated_transfer_syntax.as_str()),
+                ],
             ));
         }
 
@@ -643,8 +684,8 @@ fn wait_for_store_response(
                     match value.value_type {
                         PDataValueType::Command => command_accumulator.feed(&value)?,
                         PDataValueType::Data => {
-                            return Err(anyhow!(
-                                "unexpected dataset fragment in C-GET C-STORE response"
+                            return Err(crate::net::err(
+                                "error-net-cget-store-unexpected-dataset",
                             ));
                         }
                     }
@@ -654,32 +695,36 @@ fn wait_for_store_response(
                     continue;
                 };
                 let command_field = read_u16_opt_from_mem(&command, tags::COMMAND_FIELD)
-                    .ok_or_else(|| anyhow!("missing C-STORE response command field"))?;
+                    .ok_or_else(|| crate::net::err("error-net-missing-cstore-rsp-command-field"))?;
                 match command_field {
                     0x8001 => {
                         let status = read_u16_opt_from_mem(&command, tags::STATUS)
-                            .ok_or_else(|| anyhow!("missing C-STORE response status"))?;
+                            .ok_or_else(|| crate::net::err("error-net-missing-cstore-rsp-status"))?;
                         return Ok(GetStoreSuboperationOutcome::Status(status));
                     }
                     0x0FFF => return Ok(GetStoreSuboperationOutcome::Canceled),
                     _ => {
-                        return Err(anyhow!(
-                            "unexpected command 0x{command_field:04X} while waiting for C-STORE-RSP"
+                        let command = format!("{command_field:04X}");
+                        return Err(crate::net::err_with(
+                            "error-net-cget-unexpected-command",
+                            [("command", command.as_str())],
                         ));
                     }
                 }
             }
             Pdu::AbortRQ { source } => {
-                return Err(anyhow!(
-                    "peer aborted association during C-GET C-STORE suboperation: {:?}",
-                    source
+                let source = format!("{source:?}");
+                return Err(crate::net::err_with(
+                    "error-net-peer-aborted",
+                    [("source", source.as_str())],
                 ));
             }
-            Pdu::ReleaseRQ => return Err(anyhow!("peer released association during C-GET")),
+            Pdu::ReleaseRQ => return Err(crate::net::err("error-net-cget-peer-released")),
             other => {
-                return Err(anyhow!(
-                    "unexpected PDU during C-GET C-STORE suboperation: {:?}",
-                    other
+                let pdu = format!("{other:?}");
+                return Err(crate::net::err_with(
+                    "error-net-cget-unexpected-pdu",
+                    [("pdu", pdu.as_str())],
                 ));
             }
         }
@@ -751,12 +796,10 @@ fn send_dataset_reader_on_server<R: Read>(
 
 fn validate_dataset_payload(len: usize) -> Result<()> {
     if len == 0 {
-        return Err(anyhow!("encoded C-GET C-STORE dataset is empty"));
+        return Err(crate::net::err("error-net-cget-dataset-empty"));
     }
     if !len.is_multiple_of(2) {
-        return Err(anyhow!(
-            "encoded C-GET C-STORE dataset ended with an odd-length trailing fragment"
-        ));
+        return Err(crate::net::err("error-net-cget-dataset-odd-length"));
     }
     Ok(())
 }
@@ -815,7 +858,10 @@ fn query_model_from_move_sop_class_uid(sop_class_uid: &str) -> Result<QueryModel
     match sop_class_uid.trim_end_matches('\0') {
         uids::STUDY_ROOT_QUERY_RETRIEVE_INFORMATION_MODEL_MOVE => Ok(QueryModel::StudyRoot),
         uids::PATIENT_ROOT_QUERY_RETRIEVE_INFORMATION_MODEL_MOVE => Ok(QueryModel::PatientRoot),
-        other => Err(anyhow!("unsupported C-MOVE model SOP class UID: {other}")),
+        other => Err(crate::net::err_with(
+            "error-net-unsupported-model-sop",
+            [("operation", "C-MOVE"), ("uid", other)],
+        )),
     }
 }
 
@@ -823,7 +869,10 @@ fn query_model_from_get_sop_class_uid(sop_class_uid: &str) -> Result<QueryModel>
     match sop_class_uid.trim_end_matches('\0') {
         uids::STUDY_ROOT_QUERY_RETRIEVE_INFORMATION_MODEL_GET => Ok(QueryModel::StudyRoot),
         uids::PATIENT_ROOT_QUERY_RETRIEVE_INFORMATION_MODEL_GET => Ok(QueryModel::PatientRoot),
-        other => Err(anyhow!("unsupported C-GET model SOP class UID: {other}")),
+        other => Err(crate::net::err_with(
+            "error-net-unsupported-model-sop",
+            [("operation", "C-GET"), ("uid", other)],
+        )),
     }
 }
 

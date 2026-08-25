@@ -49,14 +49,15 @@ pub(super) enum TaskStatus {
 
 impl fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TaskStatus::Queued => f.write_str("Queued"),
-            TaskStatus::Running => f.write_str("Running"),
-            TaskStatus::Cancelling => f.write_str("Cancelling"),
-            TaskStatus::Succeeded => f.write_str("Succeeded"),
-            TaskStatus::Failed => f.write_str("Failed"),
-            TaskStatus::Cancelled => f.write_str("Cancelled"),
-        }
+        let key = match self {
+            TaskStatus::Queued => "tui-task-queued",
+            TaskStatus::Running => "tui-task-running",
+            TaskStatus::Cancelling => "tui-task-cancelling",
+            TaskStatus::Succeeded => "tui-task-succeeded",
+            TaskStatus::Failed => "tui-task-failed",
+            TaskStatus::Cancelled => "tui-task-cancelled",
+        };
+        f.write_str(&tr(key))
     }
 }
 
@@ -117,19 +118,31 @@ impl BackgroundTask {
         match self {
             Self::Query {
                 node_name_or_id, ..
-            } => format!("Querying {node_name_or_id}..."),
+            } => tr1("tui-task-querying", "node", node_name_or_id),
             Self::Retrieve { request } => {
-                format!("Retrieving from {}...", request.node_name_or_id)
+                tr1("tui-task-retrieving", "node", &request.node_name_or_id)
             }
-            Self::Import { path } => format!("Importing {}...", path.display()),
+            Self::Import { path } => tr1("tui-task-importing", "path", path.display()),
             Self::SendStudy {
                 study_instance_uid,
                 destination_node,
-            } => format!("Sending study {study_instance_uid} to {destination_node}..."),
+            } => tr2(
+                "tui-task-sending-study",
+                "uid",
+                study_instance_uid,
+                "node",
+                destination_node,
+            ),
             Self::SendSeries {
                 series_instance_uid,
                 destination_node,
-            } => format!("Sending series {series_instance_uid} to {destination_node}..."),
+            } => tr2(
+                "tui-task-sending-series",
+                "uid",
+                series_instance_uid,
+                "node",
+                destination_node,
+            ),
         }
     }
 
@@ -254,9 +267,13 @@ pub(super) enum TaskError {
 impl fmt::Display for TaskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TaskAlreadyRunning => f.write_str("background task already running"),
+            Self::TaskAlreadyRunning => f.write_str(&tr("error-task-already-running")),
             Self::ThreadLaunchFailed(error) => {
-                write!(f, "failed to launch background task thread: {error}")
+                write!(
+                    f,
+                    "{}",
+                    tr1("error-task-thread-launch", "error", error.to_string())
+                )
             }
         }
     }
@@ -314,7 +331,7 @@ pub(super) enum ActiveTaskKind {
 
 impl ActiveTaskKind {
     fn disconnected_result(self) -> TaskResult {
-        let error = anyhow!("background task thread disconnected before sending a result");
+        let error = anyhow!("{}", tr("error-task-disconnected"));
         match self {
             Self::Query => TaskResult::Query(Err(error)),
             Self::Retrieve => TaskResult::Retrieve(Err(error)),
@@ -478,7 +495,7 @@ impl TaskRunner {
 
         let worker = thread::Builder::new().name(thread_name).spawn(move || {
             if cancel_flag.load(Ordering::Acquire) {
-                reporter.cancelled(Some("cancelled before start".to_string()));
+                reporter.cancelled(Some(tr("tui-log-cancelled-before-start")));
                 return;
             }
 
@@ -487,25 +504,36 @@ impl TaskRunner {
             match &task {
                 BackgroundTask::Query {
                     node_name_or_id, ..
-                } => reporter.log(format!("Starting query against {node_name_or_id}")),
-                BackgroundTask::Retrieve { request } => reporter.log(format!(
-                    "Starting retrieve from {}",
-                    request.node_name_or_id
-                )),
+                } => reporter.log(tr1("tui-log-query-start", "node", node_name_or_id)),
+                BackgroundTask::Retrieve { request } => {
+                    reporter.log(tr1(
+                        "tui-log-retrieve-start",
+                        "node",
+                        &request.node_name_or_id,
+                    ))
+                }
                 BackgroundTask::Import { path } => {
-                    reporter.log(format!("Starting import of {}", path.display()))
+                    reporter.log(tr1("tui-log-import-start", "path", path.display()))
                 }
                 BackgroundTask::SendStudy {
                     study_instance_uid,
                     destination_node,
-                } => reporter.log(format!(
-                    "Starting send study {study_instance_uid} to {destination_node}"
+                } => reporter.log(tr2(
+                    "tui-log-send-study-start",
+                    "uid",
+                    study_instance_uid,
+                    "node",
+                    destination_node,
                 )),
                 BackgroundTask::SendSeries {
                     series_instance_uid,
                     destination_node,
-                } => reporter.log(format!(
-                    "Starting send series {series_instance_uid} to {destination_node}"
+                } => reporter.log(tr2(
+                    "tui-log-send-series-start",
+                    "uid",
+                    series_instance_uid,
+                    "node",
+                    destination_node,
                 )),
             }
 
@@ -556,32 +584,42 @@ impl TaskRunner {
                 if let Some(cleanup) = cleanup_on_cancel {
                     cleanup(&services, &task);
                 }
-                reporter.cancelled(Some("cancelled".to_string()));
+                reporter.cancelled(Some(tr("tui-log-cancelled")));
                 return;
             }
 
             let outcome_summary = match &result {
                 TaskResult::Query(Ok(matches)) => {
                     reporter.progress(1, Some(1));
-                    format!("Query completed: {} matches", matches.len())
+                    tr_n("tui-task-query-done", "count", matches.len() as i64)
                 }
-                TaskResult::Query(Err(error)) => format!("Query failed: {error}"),
+                TaskResult::Query(Err(error)) => {
+                    tr1("tui-task-query-failed", "error", error.to_string())
+                }
                 TaskResult::Retrieve(Ok(outcome)) => {
                     reporter.progress(1, Some(1));
-                    format!("Retrieve completed: {:?}", outcome)
+                    tr1("tui-task-retrieve-done", "outcome", format!("{outcome:?}"))
                 }
-                TaskResult::Retrieve(Err(error)) => format!("Retrieve failed: {error}"),
+                TaskResult::Retrieve(Err(error)) => {
+                    tr1("tui-task-retrieve-failed", "error", error.to_string())
+                }
                 TaskResult::Import(Ok(report)) => {
                     reporter.progress(1, Some(1));
-                    format!("Import completed: {:?}", report)
+                    tr1("tui-task-import-done", "report", format!("{report:?}"))
                 }
-                TaskResult::Import(Err(error)) => format!("Import failed: {error}"),
+                TaskResult::Import(Err(error)) => {
+                    tr1("tui-task-import-failed", "error", error.to_string())
+                }
                 TaskResult::Send(Ok(outcome)) => {
                     reporter.progress(1, Some(1));
-                    format!("Send completed: {:?}", outcome)
+                    tr1("tui-task-send-done", "outcome", format!("{outcome:?}"))
                 }
-                TaskResult::Send(Err(error)) => format!("Send failed: {error}"),
-                TaskResult::InternalError(error) => format!("Task failed: {error}"),
+                TaskResult::Send(Err(error)) => {
+                    tr1("cli-msg-send-failed", "error", error.to_string())
+                }
+                TaskResult::InternalError(error) => {
+                    tr1("tui-task-failed-generic", "error", error.to_string())
+                }
             };
             reporter.log(outcome_summary);
 
@@ -663,16 +701,14 @@ impl TaskRunner {
     fn disconnected_finished_event(&mut self, at: Instant) -> TaskEvent {
         let result = match self.active_task_kind.take() {
             Some(task_kind) => task_kind.disconnected_result(),
-            None => TaskResult::InternalError(anyhow!(
-                "background task thread disconnected but active_task_kind was None: unexpected state"
-            )),
+            None => TaskResult::InternalError(anyhow!("{}", tr("error-task-kind-missing"))),
         };
         self.finish_active_task(result, at)
     }
 
     fn disconnected_terminal_event(&mut self, at: Instant) -> TaskEvent {
         if self.active_cancelled() {
-            self.finish_cancelled_task(0, at, Some("cancelled".to_string()))
+            self.finish_cancelled_task(0, at, Some(tr("tui-log-cancelled")))
         } else {
             self.disconnected_finished_event(at)
         }

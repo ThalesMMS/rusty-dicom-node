@@ -1,6 +1,24 @@
 use super::*;
 use ratatui::style::Color;
 
+fn form_err_line(key: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {}", tr(key)),
+        Style::default().fg(Color::Red),
+    ))
+}
+
+fn form_err_text(text: String) -> Line<'static> {
+    Line::from(Span::styled(text, Style::default().fg(Color::Red)))
+}
+
+fn form_hint_line(key: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {}", tr(key)),
+        Style::default().fg(Color::DarkGray),
+    ))
+}
+
 pub(in crate::tui) fn render_task_inspect_modal(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -47,7 +65,7 @@ pub(in crate::tui) fn render_help_modal(frame: &mut Frame<'_>, area: Rect, view:
     frame.render_widget(Clear, modal_area);
     frame.render_widget(
         Paragraph::new(help_text(view))
-            .block(Block::default().title("Help").borders(Borders::ALL))
+            .block(Block::default().title(tr("tui-pane-help")).borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         modal_area,
     );
@@ -100,7 +118,7 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
                 Paragraph::new(render_delete_confirm_text(confirm))
                     .block(
                         Block::default()
-                            .title("Delete Remote Node")
+                            .title(tr("tui-form-delete-remote-node"))
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: false }),
@@ -114,7 +132,7 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
                 Paragraph::new(render_query_form_text(form))
                     .block(
                         Block::default()
-                            .title("Query Remote Node")
+                            .title(tr("tui-form-query-remote-node"))
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: false }),
@@ -128,7 +146,7 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
                 Paragraph::new(render_retrieve_form_text(form))
                     .block(
                         Block::default()
-                            .title("Retrieve Matches")
+                            .title(tr("tui-form-retrieve-matches"))
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: false }),
@@ -142,7 +160,7 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
                 Paragraph::new(render_import_form_text(form))
                     .block(
                         Block::default()
-                            .title("Import Local Files")
+                            .title(tr("tui-form-import-local-files"))
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: false }),
@@ -166,7 +184,7 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
                 Paragraph::new(render_storage_scp_form_text(form))
                     .block(
                         Block::default()
-                            .title("Storage SCP Settings")
+                            .title(tr("tui-form-storage-scp-settings"))
                             .borders(Borders::ALL),
                     )
                     .wrap(Wrap { trim: false }),
@@ -207,46 +225,51 @@ pub(in crate::tui) fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Mo
 /// // text now contains lines such as "Mode: create a new remote node" and "Name: My Node"
 /// ```
 pub(in crate::tui) fn render_node_form_text(form: &NodeFormState) -> Text<'static> {
+    let required = tr("common-required");
+    let optional = tr("common-optional");
+    let name_label = tr("tui-form-field-name");
+    let ae_label = tr("tui-form-field-ae-title");
+    let host_label = tr("tui-form-field-host");
+    let port_label = tr("tui-form-field-port");
+    let move_label = tr("tui-form-field-move-dest");
+    let notes_label = tr("tui-form-field-notes");
+    let mode = match form.mode {
+        NodeFormMode::Add => tr("tui-form-mode-add"),
+        NodeFormMode::Edit => tr("tui-form-mode-edit"),
+    };
+
     let mut lines = vec![
-        Line::from(format!(
-            "Mode: {}",
-            match form.mode {
-                NodeFormMode::Add => "create a new remote node",
-                NodeFormMode::Edit => "update the selected remote node",
-            }
-        )),
+        Line::from(format!("{}: {mode}", tr("tui-status-mode"))),
         Line::from(""),
     ];
 
-    // Name
     lines.push(form_field_line(
         form.active == NodeField::Name,
-        "Name",
-        display_text_field(&form.name, "required"),
+        &name_label,
+        display_text_field(&form.name, &required),
     ));
     if form.touched.contains(&NodeField::Name) && form.name.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  ! node name is required",
+            format!("  {}", tr("tui-form-err-name-required")),
             Style::default().fg(Color::Red),
         )));
     } else if form.active == NodeField::Name && form.name.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  hint: a short label (e.g., PACS)",
+            format!("  {}", tr("tui-form-hint-name")),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    // AE title
     lines.push(form_field_line(
         form.active == NodeField::AeTitle,
-        "AE title",
-        display_text_field(&form.ae_title, "required"),
+        &ae_label,
+        display_text_field(&form.ae_title, &required),
     ));
     if form.touched.contains(&NodeField::AeTitle) {
         let ae_title = form.ae_title.trim().to_ascii_uppercase();
         if ae_title.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  ! AE title is required",
+                format!("  {}", tr("tui-form-err-ae-required")),
                 Style::default().fg(Color::Red),
             )));
         } else if let Err(err) = crate::models::validate_ae_title(&ae_title) {
@@ -257,40 +280,38 @@ pub(in crate::tui) fn render_node_form_text(form: &NodeFormState) -> Text<'stati
         }
     } else if form.active == NodeField::AeTitle && form.ae_title.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  hint: up to 16 chars (A-Z, 0-9, space), e.g. ORTHANC",
+            format!("  {}", tr("tui-form-hint-local-ae")),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    // Host
     lines.push(form_field_line(
         form.active == NodeField::Host,
-        "Host",
-        display_text_field(&form.host, "required"),
+        &host_label,
+        display_text_field(&form.host, &required),
     ));
     if form.touched.contains(&NodeField::Host) && form.host.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  ! host is required",
+            format!("  {}", tr("tui-form-err-host-required")),
             Style::default().fg(Color::Red),
         )));
     } else if form.active == NodeField::Host && form.host.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  hint: hostname or IP (e.g., 127.0.0.1)",
+            format!("  {}", tr("cli-arg-host")),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    // Port
     lines.push(form_field_line(
         form.active == NodeField::Port,
-        "Port",
-        display_text_field(&form.port, "required"),
+        &port_label,
+        display_text_field(&form.port, &required),
     ));
     if form.touched.contains(&NodeField::Port) {
         let port = form.port.trim();
         if port.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  ! port is required",
+                format!("  {}", tr("tui-form-err-port-required")),
                 Style::default().fg(Color::Red),
             )));
         } else if let Err(err) = crate::models::parse_port(port) {
@@ -301,48 +322,42 @@ pub(in crate::tui) fn render_node_form_text(form: &NodeFormState) -> Text<'stati
         }
     } else if form.active == NodeField::Port && form.port.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  hint: 1-65535 (default DICOM: 104)",
+            format!("  {}", tr("cli-arg-port")),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    // Move destination
     lines.push(form_field_line(
         form.active == NodeField::MoveDestination,
-        "Move destination",
-        display_text_field(&form.move_destination, "optional"),
+        &move_label,
+        display_text_field(&form.move_destination, &optional),
     ));
     if form.touched.contains(&NodeField::MoveDestination) {
         let value = form.move_destination.trim().to_ascii_uppercase();
         if !value.is_empty() {
             if let Err(err) = crate::models::validate_ae_title(&value) {
                 lines.push(Line::from(Span::styled(
-                    format!("  ! move destination AE title is invalid: {err}"),
+                    format!("  {}", tr1("tui-form-err-move-dest-invalid", "err", err)),
                     Style::default().fg(Color::Red),
                 )));
             }
         }
     } else if form.active == NodeField::MoveDestination && form.move_destination.trim().is_empty() {
         lines.push(Line::from(Span::styled(
-            "  hint: optional; override C-MOVE destination AE title",
+            format!("  {}", tr("tui-form-hint-move-dest")),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    // Notes
     lines.push(form_field_line(
         form.active == NodeField::Notes,
-        "Notes",
-        display_text_field(&form.notes, "optional"),
+        &notes_label,
+        display_text_field(&form.notes, &optional),
     ));
 
     lines.push(Line::from(""));
-    lines.push(Line::from(
-        "Type to edit. Tab/Shift-Tab or Up/Down move fields. Enter saves. Esc cancels.",
-    ));
+    lines.push(Line::from(tr("tui-controls-hint")));
 
-    // Global submit error summary.
-    // Now that we show per-field inline validation hints, keep this as a lightweight summary.
     if let Some(error) = &form.error {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -370,12 +385,19 @@ pub(in crate::tui) fn render_node_form_text(form: &NodeFormState) -> Text<'stati
 /// ```
 pub(in crate::tui) fn render_delete_confirm_text(confirm: &DeleteConfirmState) -> Text<'static> {
     Text::from(vec![
-        Line::from(format!(
-            "Delete remote node {} [{}] at {}:{}?",
-            confirm.node.name, confirm.node.ae_title, confirm.node.host, confirm.node.port
+        Line::from(tr4(
+            "tui-form-delete-confirm",
+            "name",
+            &confirm.node.name,
+            "ae",
+            &confirm.node.ae_title,
+            "host",
+            &confirm.node.host,
+            "port",
+            confirm.node.port,
         )),
         Line::from(""),
-        Line::from("Press Enter or y to confirm. Press Esc or n to cancel."),
+        Line::from(tr("tui-controls-hint")),
     ])
 }
 
@@ -400,9 +422,16 @@ pub(in crate::tui) fn render_delete_confirm_text(confirm: &DeleteConfirmState) -
 /// ```
 pub(in crate::tui) fn render_query_form_text(form: &QueryFormState) -> Text<'static> {
     let mut lines = vec![
-        Line::from(format!(
-            "Remote node: {} [{}] {}:{}",
-            form.node.name, form.node.ae_title, form.node.host, form.node.port
+        Line::from(tr4(
+            "tui-form-remote-node-line",
+            "name",
+            &form.node.name,
+            "ae",
+            &form.node.ae_title,
+            "host",
+            &form.node.host,
+            "port",
+            form.node.port,
         )),
         Line::from(""),
     ];
@@ -410,45 +439,45 @@ pub(in crate::tui) fn render_query_form_text(form: &QueryFormState) -> Text<'sta
     // Model
     lines.push(form_field_line(
         form.active == QueryField::Model,
-        "Model",
+        tr("tui-form-field-model"),
         form.model.to_string(),
     ));
 
     // Level
     lines.push(form_field_line(
         form.active == QueryField::Level,
-        "Level",
+        tr("tui-form-field-level"),
         form.level.to_string(),
     ));
 
     // Patient name
     lines.push(form_field_line(
         form.active == QueryField::PatientName,
-        "Patient name",
-        display_text_field(&form.patient_name, "optional"),
+        tr("tui-form-field-patient-name"),
+        display_text_field(&form.patient_name, &tr("common-optional")),
     ));
 
     // Patient ID
     lines.push(form_field_line(
         form.active == QueryField::PatientId,
-        "Patient ID",
-        display_text_field(&form.patient_id, "optional"),
+        tr("tui-form-field-patient-id"),
+        display_text_field(&form.patient_id, &tr("common-optional")),
     ));
 
     // Accession number
     lines.push(form_field_line(
         form.active == QueryField::AccessionNumber,
-        "Accession number",
-        display_text_field(&form.accession_number, "optional"),
+        tr("tui-form-field-accession"),
+        display_text_field(&form.accession_number, &tr("common-optional")),
     ));
 
     // Study UID
     lines.push(form_field_line(
         form.active == QueryField::StudyUid,
-        "Study UID",
+        tr("tui-form-field-study-uid"),
         display_text_field(
             &form.study_uid,
-            level_uid_requirement_hint(form.level, QueryUidField::Study),
+            &level_uid_requirement_hint(form.level, QueryUidField::Study),
         ),
     ));
     push_query_uid_help(&mut lines, form, QueryField::StudyUid, QueryUidField::Study);
@@ -456,10 +485,10 @@ pub(in crate::tui) fn render_query_form_text(form: &QueryFormState) -> Text<'sta
     // Series UID
     lines.push(form_field_line(
         form.active == QueryField::SeriesUid,
-        "Series UID",
+        tr("tui-form-field-series-uid"),
         display_text_field(
             &form.series_uid,
-            level_uid_requirement_hint(form.level, QueryUidField::Series),
+            &level_uid_requirement_hint(form.level, QueryUidField::Series),
         ),
     ));
     push_query_uid_help(
@@ -472,8 +501,8 @@ pub(in crate::tui) fn render_query_form_text(form: &QueryFormState) -> Text<'sta
     // SOP Instance UID
     lines.push(form_field_line(
         form.active == QueryField::SopInstanceUid,
-        "SOP Instance UID",
-        display_text_field(&form.sop_instance_uid, "optional"),
+        tr("tui-form-field-sop-uid"),
+        display_text_field(&form.sop_instance_uid, &tr("common-optional")),
     ));
     if form.touched.contains(&QueryField::SopInstanceUid) {
         let value = form.sop_instance_uid.trim();
@@ -495,22 +524,22 @@ pub(in crate::tui) fn render_query_form_text(form: &QueryFormState) -> Text<'sta
     // Date from/to
     lines.push(form_field_line(
         form.active == QueryField::DateFrom,
-        "Date from",
+        tr("tui-form-field-date-from"),
         display_text_field(&form.date_from, "YYYYMMDD"),
     ));
     push_query_date_help(&mut lines, form);
 
     lines.push(form_field_line(
         form.active == QueryField::DateTo,
-        "Date to",
+        tr("tui-form-field-date-to"),
         display_text_field(&form.date_to, "YYYYMMDD"),
     ));
 
     // Modality
     lines.push(form_field_line(
         form.active == QueryField::Modality,
-        "Modality",
-        display_text_field(&form.modality, "optional"),
+        tr("tui-form-field-modality"),
+        display_text_field(&form.modality, &tr("common-optional")),
     ));
     if form.touched.contains(&QueryField::Modality) {
         let value = form.modality.trim();
@@ -533,14 +562,12 @@ pub(in crate::tui) fn render_query_form_text(form: &QueryFormState) -> Text<'sta
     // Study description
     lines.push(form_field_line(
         form.active == QueryField::StudyDescription,
-        "Study description",
-        display_text_field(&form.study_description, "optional"),
+        tr("tui-form-field-study-desc"),
+        display_text_field(&form.study_description, &tr("common-optional")),
     ));
 
     lines.push(Line::from(""));
-    lines.push(Line::from(
-        "Type to edit text. Left/Right/Space cycle model or level. Enter runs the query. Esc cancels.",
-    ));
+    lines.push(Line::from(tr("tui-controls-hint")));
 
     // Global submit error summary.
     // Now that we show per-field inline validation hints, keep this as a lightweight summary.
@@ -561,70 +588,28 @@ enum QueryUidField {
     Series,
 }
 
-fn level_uid_requirement_hint(level: QueryLevel, which: QueryUidField) -> &'static str {
-    match (level, which) {
-        (QueryLevel::Series | QueryLevel::Image, QueryUidField::Study) => "required",
-        (QueryLevel::Image, QueryUidField::Series) => "required",
-        _ => "optional",
-    }
+fn level_uid_requirement_hint(level: QueryLevel, which: QueryUidField) -> String {
+    let key = match (level, which) {
+        (QueryLevel::Series | QueryLevel::Image, QueryUidField::Study) => "common-required",
+        (QueryLevel::Image, QueryUidField::Series) => "common-required",
+        _ => "common-optional",
+    };
+    tr(key)
 }
 
 fn validate_query_uid(value: &str) -> anyhow::Result<()> {
-    // Mirror the validation in `tui::forms` without exporting that helper.
-    if value.is_empty() {
-        return Err(anyhow::anyhow!("UID cannot be empty"));
-    }
-    if value.len() > 64 {
-        return Err(anyhow::anyhow!("UID must be at most 64 characters"));
-    }
-    if value.starts_with('.') || value.ends_with('.') {
-        return Err(anyhow::anyhow!("UID cannot start or end with a dot"));
-    }
-    for part in value.split('.') {
-        if part.is_empty() {
-            return Err(anyhow::anyhow!("UID cannot contain empty components"));
-        }
-        if part.len() > 16 {
-            return Err(anyhow::anyhow!("UID component '{}' is too long", part));
-        }
-        if !part.chars().all(|c| c.is_ascii_digit()) {
-            return Err(anyhow::anyhow!("UID component '{}' must be numeric", part));
-        }
-        if part.len() > 1 && part.starts_with('0') {
-            return Err(anyhow::anyhow!(
-                "UID component '{}' cannot have leading zeros",
-                part
-            ));
-        }
-    }
-    Ok(())
+    crate::tui::forms::validate_uid(value)
 }
 
 fn validate_query_dicom_date(value: &str) -> anyhow::Result<()> {
-    if value.len() != 8 {
-        return Err(anyhow::anyhow!("expected YYYYMMDD"));
-    }
-    if !value.chars().all(|c| c.is_ascii_digit()) {
-        return Err(anyhow::anyhow!("expected YYYYMMDD"));
+    if value.len() != 8 || !value.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow::anyhow!("{}", tr("tui-form-submit-date-format")));
     }
     Ok(())
 }
 
 fn validate_query_modality(value: &str) -> anyhow::Result<()> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow::anyhow!("modality cannot be empty"));
-    }
-    if trimmed.len() > 16 {
-        return Err(anyhow::anyhow!("modality must be at most 16 characters"));
-    }
-    if !trimmed
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-    {
-        return Err(anyhow::anyhow!("modality must be A-Z or 0-9"));
-    }
-    Ok(())
+    crate::tui::forms::validate_modality(value)
 }
 
 fn push_query_uid_help(
@@ -767,19 +752,26 @@ fn push_query_date_help(lines: &mut Vec<Line<'static>>, form: &QueryFormState) {
 /// ```
 pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Text<'static> {
     let mut lines = vec![
-        Line::from(format!(
-            "Remote node: {} [{}] {}:{}",
-            form.node.name, form.node.ae_title, form.node.host, form.node.port
+        Line::from(tr4(
+            "tui-form-remote-node-line",
+            "name",
+            &form.node.name,
+            "ae",
+            &form.node.ae_title,
+            "host",
+            &form.node.host,
+            "port",
+            form.node.port,
         )),
         Line::from(""),
         form_field_line(
             form.active == RetrieveField::Model,
-            "Model",
+            tr("tui-form-field-model"),
             form.model.to_string(),
         ),
         form_field_line(
             form.active == RetrieveField::Level,
-            "Level",
+            tr("tui-form-field-level"),
             form.level.to_string(),
         ),
     ];
@@ -787,8 +779,8 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
     // Study UID
     lines.push(form_field_line(
         form.active == RetrieveField::StudyUid,
-        "Study UID",
-        display_text_field(&form.study_uid, "required"),
+        tr("tui-form-field-study-uid"),
+        display_text_field(&form.study_uid, &tr("common-required")),
     ));
     if form.touched.contains(&RetrieveField::StudyUid) {
         let value = form.study_uid.trim();
@@ -813,14 +805,13 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
     // Series UID
     lines.push(form_field_line(
         form.active == RetrieveField::SeriesUid,
-        "Series UID",
+        tr("tui-form-field-series-uid"),
         display_text_field(
             &form.series_uid,
             match form.level {
-                QueryLevel::Image => "required",
-                QueryLevel::Series => "required",
-                QueryLevel::Study => "optional",
-                QueryLevel::Patient => "(n/a)",
+                QueryLevel::Image | QueryLevel::Series => tr("common-required"),
+                QueryLevel::Study => tr("common-optional"),
+                QueryLevel::Patient => "(n/a)".to_string(),
             },
         ),
     ));
@@ -869,12 +860,12 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
     // Instance UID
     lines.push(form_field_line(
         form.active == RetrieveField::InstanceUid,
-        "Instance UID",
+        tr("tui-form-field-instance-uid"),
         display_text_field(
             &form.instance_uid,
             match form.level {
-                QueryLevel::Image => "required",
-                _ => "optional",
+                QueryLevel::Image => tr("common.required"),
+                _ => tr("common.optional"),
             },
         ),
     ));
@@ -910,7 +901,7 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
     // Move destination
     lines.push(form_field_line(
         form.active == RetrieveField::Destination,
-        "Move destination",
+        tr("tui-form-field-move-dest"),
         display_text_field(&form.destination, "local AE fallback"),
     ));
     if form.touched.contains(&RetrieveField::Destination) {
@@ -933,7 +924,7 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
 
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Type to edit text. Left/Right/Space cycle model or level. Enter runs retrieve. Esc cancels.",
+        tr("tui-controls-hint"),
     ));
 
     // Global submit error summary.
@@ -951,11 +942,11 @@ pub(in crate::tui) fn render_retrieve_form_text(form: &RetrieveFormState) -> Tex
 
 pub(in crate::tui) fn render_import_form_text(form: &ImportFormState) -> Text<'static> {
     let mut lines = vec![
-        Line::from("Select a local file, directory, or zip to import into the local index."),
+        Line::from(tr("tui-form-import-local-files")),
         Line::from(""),
         form_field_line(
             form.active == ImportField::Path,
-            "Path",
+            tr("tui-form-field-path"),
             display_text_field(&form.path, "folder|file|zip"),
         ),
     ];
@@ -980,7 +971,7 @@ pub(in crate::tui) fn render_import_form_text(form: &ImportFormState) -> Text<'s
 
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Type to edit. Enter starts import. Esc cancels.",
+        tr("tui-controls-hint"),
     ));
 
     // Global submit error summary.
@@ -998,11 +989,11 @@ pub(in crate::tui) fn render_import_form_text(form: &ImportFormState) -> Text<'s
 
 pub(in crate::tui) fn render_send_form_text(form: &SendFormState) -> Text<'static> {
     let mut lines = vec![
-        Line::from("Send local data to a configured remote node."),
+        Line::from(tr("tui-form-send-study")),
         Line::from(""),
         form_field_line(
             form.active == SendField::Kind,
-            "Kind",
+            tr("tui-form-field-kind"),
             match form.kind {
                 SendKind::Study => "study".to_string(),
                 SendKind::Series => "series".to_string(),
@@ -1011,15 +1002,15 @@ pub(in crate::tui) fn render_send_form_text(form: &SendFormState) -> Text<'stati
         form_field_line(
             form.active == SendField::Uid,
             match form.kind {
-                SendKind::Study => "Study UID",
-                SendKind::Series => "Series UID",
+                SendKind::Study => tr("tui-form-field-study-uid"),
+                SendKind::Series => tr("tui-form-field-series-uid"),
             },
-            display_text_field(&form.uid, "required"),
+            display_text_field(&form.uid, tr("common-required")),
         ),
         form_field_line(
             form.active == SendField::DestinationNode,
-            "Destination node",
-            display_text_field(&form.destination_node, "required"),
+            tr("tui-form-field-dest-node"),
+            display_text_field(&form.destination_node, tr("common-required")),
         ),
     ];
 
@@ -1060,7 +1051,7 @@ pub(in crate::tui) fn render_send_form_text(form: &SendFormState) -> Text<'stati
 
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Type to edit. Left/Right/Space cycle kind. Enter starts send. Esc cancels.",
+        tr("tui-controls-hint"),
     ));
 
     // Global submit error summary.
@@ -1076,252 +1067,166 @@ pub(in crate::tui) fn render_send_form_text(form: &SendFormState) -> Text<'stati
     Text::from(lines)
 }
 
-pub(in crate::tui) fn render_storage_scp_form_text(form: &StorageScpFormState) -> Text<'static> {
-    let mut lines = vec![
-        Line::from("Edit local Storage SCP settings (saved to config.json)."),
-        Line::from(""),
-    ];
+fn scp_limit_invalid(raw: &str) -> bool {
+    !raw.trim().is_empty() && raw.trim().parse::<u64>().ok().filter(|v| *v > 0).is_none()
+}
 
-    // Local AE
-    lines.push(form_field_line(
-        form.active == StorageScpField::LocalAeTitle,
-        "Local AE",
-        display_text_field(&form.local_ae_title, "required"),
-    ));
-    if form.touched.contains(&StorageScpField::LocalAeTitle) {
-        let ae_title = form.local_ae_title.trim().to_ascii_uppercase();
-        if ae_title.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  ! local AE title is required",
-                Style::default().fg(Color::Red),
-            )));
-        } else if let Err(err) = crate::models::validate_ae_title(&ae_title) {
-            lines.push(Line::from(Span::styled(
-                format!("  ! local AE title is invalid: {err}"),
-                Style::default().fg(Color::Red),
-            )));
-        }
-    } else if form.active == StorageScpField::LocalAeTitle && form.local_ae_title.trim().is_empty()
-    {
-        lines.push(Line::from(Span::styled(
-            "  hint: up to 16 chars (A-Z, 0-9, space), e.g. ARCHIVE_AE",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    // Bind address
-    lines.push(form_field_line(
-        form.active == StorageScpField::BindAddr,
-        "Bind addr",
-        display_text_field(&form.bind_addr, "required"),
-    ));
-    if form.touched.contains(&StorageScpField::BindAddr) && form.bind_addr.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  ! bind address is required",
-            Style::default().fg(Color::Red),
-        )));
-    } else if form.active == StorageScpField::BindAddr && form.bind_addr.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  hint: usually 0.0.0.0 (all interfaces) or 127.0.0.1",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    // Port
-    lines.push(form_field_line(
-        form.active == StorageScpField::Port,
-        "Port",
-        display_text_field(&form.port, "required"),
-    ));
-    if form.touched.contains(&StorageScpField::Port) {
-        let port = form.port.trim();
-        if port.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  ! port is required",
-                Style::default().fg(Color::Red),
-            )));
-        } else if let Err(err) = crate::models::parse_port(port) {
-            lines.push(Line::from(Span::styled(
-                format!("  ! {err}"),
-                Style::default().fg(Color::Red),
-            )));
-        }
-    } else if form.active == StorageScpField::Port && form.port.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  hint: a number from 1 to 65535, e.g. 104",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    // Toggles
-    lines.push(form_field_line(
-        form.active == StorageScpField::AllowPromiscuous,
-        "Promiscuous",
-        display_toggle_field(form.allow_promiscuous_storage, "y", "n"),
-    ));
-    if form.active == StorageScpField::AllowPromiscuous
-        && !form.touched.contains(&StorageScpField::AllowPromiscuous)
-    {
-        lines.push(Line::from(Span::styled(
-            "  hint: allow storage from any calling AE title",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    lines.push(form_field_line(
-        form.active == StorageScpField::StrictPdu,
-        "Strict PDU",
-        display_toggle_field(form.strict_pdu, "y", "n"),
-    ));
-    if form.active == StorageScpField::StrictPdu
-        && !form.touched.contains(&StorageScpField::StrictPdu)
-    {
-        lines.push(Line::from(Span::styled(
-            "  hint: enforce PDU size checks during associations",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    // Max PDU length
-    lines.push(form_field_line(
-        form.active == StorageScpField::MaxPduLength,
-        "Max PDU",
-        display_text_field(&form.max_pdu_length, "required"),
-    ));
-    if form.touched.contains(&StorageScpField::MaxPduLength) {
-        let value = form.max_pdu_length.trim();
-        if value.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  ! max PDU length is required",
-                Style::default().fg(Color::Red),
-            )));
-        } else if value.parse::<u32>().ok().filter(|v| *v > 0).is_none() {
-            lines.push(Line::from(Span::styled(
-                "  ! max PDU length must be an integer greater than 0",
-                Style::default().fg(Color::Red),
-            )));
-        }
-    } else if form.active == StorageScpField::MaxPduLength && form.max_pdu_length.trim().is_empty()
-    {
-        lines.push(Line::from(Span::styled(
-            "  hint: bytes, e.g. 16384",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from("Limits (bytes; blank/none = unlimited):"));
-
-    // The numeric limit fields are validated on save; show inline parse errors once touched.
-    lines.push(form_field_line(
-        form.active == StorageScpField::MaxFileImportBytes,
-        "Max file import bytes",
-        display_text_field(&form.max_file_import_bytes, "unlimited"),
-    ));
-    if form.touched.contains(&StorageScpField::MaxFileImportBytes)
-        && !form.max_file_import_bytes.trim().is_empty()
-        && form
-            .max_file_import_bytes
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|v| *v > 0)
-            .is_none()
-    {
-        lines.push(Line::from(Span::styled(
-            "  ! max file import bytes must be an integer greater than 0",
-            Style::default().fg(Color::Red),
-        )));
-    }
-
-    lines.push(form_field_line(
-        form.active == StorageScpField::MaxZipEntryBytes,
-        "Max zip entry bytes",
-        display_text_field(&form.max_zip_entry_bytes, "unlimited"),
-    ));
-    if form.touched.contains(&StorageScpField::MaxZipEntryBytes)
-        && !form.max_zip_entry_bytes.trim().is_empty()
-        && form
-            .max_zip_entry_bytes
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|v| *v > 0)
-            .is_none()
-    {
-        lines.push(Line::from(Span::styled(
-            "  ! max zip entry bytes must be an integer greater than 0",
-            Style::default().fg(Color::Red),
-        )));
-    }
-
-    lines.push(form_field_line(
-        form.active == StorageScpField::MaxZipTotalBytes,
-        "Max zip total bytes",
-        display_text_field(&form.max_zip_total_bytes, "unlimited"),
-    ));
-    if form.touched.contains(&StorageScpField::MaxZipTotalBytes)
-        && !form.max_zip_total_bytes.trim().is_empty()
-        && form
-            .max_zip_total_bytes
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|v| *v > 0)
-            .is_none()
-    {
-        lines.push(Line::from(Span::styled(
-            "  ! max zip total bytes must be an integer greater than 0",
-            Style::default().fg(Color::Red),
-        )));
-    }
-
-    lines.push(form_field_line(
-        form.active == StorageScpField::MaxZipEntryCount,
-        "Max zip entry count",
-        display_text_field(&form.max_zip_entry_count, "blank/none = unlimited"),
-    ));
-    if form.touched.contains(&StorageScpField::MaxZipEntryCount)
-        && !form.max_zip_entry_count.trim().is_empty()
-        && form
-            .max_zip_entry_count
+fn scp_limit_count_invalid(raw: &str) -> bool {
+    !raw.trim().is_empty()
+        && raw
             .trim()
             .parse::<usize>()
             .ok()
             .filter(|v| *v > 0)
             .is_none()
+}
+
+pub(in crate::tui) fn render_storage_scp_form_text(form: &StorageScpFormState) -> Text<'static> {
+    let required = tr("common.required");
+    let unlimited = tr("tui.form.unlimited");
+    let mut lines = vec![
+        Line::from(tr("tui.form.storage-intro")),
+        Line::from(""),
+    ];
+
+    lines.push(form_field_line(
+        form.active == StorageScpField::LocalAeTitle,
+        tr("tui.form.field-local-ae"),
+        display_text_field(&form.local_ae_title, &required),
+    ));
+    if form.touched.contains(&StorageScpField::LocalAeTitle) {
+        let ae_title = form.local_ae_title.trim().to_ascii_uppercase();
+        if ae_title.is_empty() {
+            lines.push(form_err_line("tui.form.err-local-ae-required"));
+        } else if let Err(err) = crate::models::validate_ae_title(&ae_title) {
+            lines.push(form_err_text(format!(
+                "  {}",
+                tr1("tui.form.err-local-ae-invalid", "err", err)
+            )));
+        }
+    } else if form.active == StorageScpField::LocalAeTitle && form.local_ae_title.trim().is_empty()
     {
-        lines.push(Line::from(Span::styled(
-            "  ! max zip entry count must be an integer greater than 0",
-            Style::default().fg(Color::Red),
-        )));
+        lines.push(form_hint_line("tui.form.hint-local-ae"));
     }
 
     lines.push(form_field_line(
-        form.active == StorageScpField::MaxStoreObjectBytes,
-        "Max store object bytes",
-        display_text_field(&form.max_store_object_bytes, "unlimited"),
+        form.active == StorageScpField::BindAddr,
+        tr("tui.form.field-bind-addr"),
+        display_text_field(&form.bind_addr, &required),
     ));
-    if form.touched.contains(&StorageScpField::MaxStoreObjectBytes)
-        && !form.max_store_object_bytes.trim().is_empty()
-        && form
-            .max_store_object_bytes
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|v| *v > 0)
-            .is_none()
+    if form.touched.contains(&StorageScpField::BindAddr) && form.bind_addr.trim().is_empty() {
+        lines.push(form_err_line("tui.form.err-bind-required"));
+    } else if form.active == StorageScpField::BindAddr && form.bind_addr.trim().is_empty() {
+        lines.push(form_hint_line("tui.form.hint-bind"));
+    }
+
+    lines.push(form_field_line(
+        form.active == StorageScpField::Port,
+        tr("tui.field.port"),
+        display_text_field(&form.port, &required),
+    ));
+    if form.touched.contains(&StorageScpField::Port) {
+        let port = form.port.trim();
+        if port.is_empty() {
+            lines.push(form_err_line("tui.form.err-port-required"));
+        } else if let Err(err) = crate::models::parse_port(port) {
+            lines.push(form_err_text(format!("  ! {err}")));
+        }
+    } else if form.active == StorageScpField::Port && form.port.trim().is_empty() {
+        lines.push(form_hint_line("tui.form.hint-port-range"));
+    }
+
+    lines.push(form_field_line(
+        form.active == StorageScpField::AllowPromiscuous,
+        tr("tui.field.promiscuous"),
+        display_toggle_field(form.allow_promiscuous_storage, "y", "n"),
+    ));
+    if form.active == StorageScpField::AllowPromiscuous
+        && !form.touched.contains(&StorageScpField::AllowPromiscuous)
     {
-        lines.push(Line::from(Span::styled(
-            "  ! max store object bytes must be an integer greater than 0",
-            Style::default().fg(Color::Red),
-        )));
+        lines.push(form_hint_line("tui.form.hint-promiscuous"));
+    }
+
+    lines.push(form_field_line(
+        form.active == StorageScpField::StrictPdu,
+        tr("tui.field.strict-pdu"),
+        display_toggle_field(form.strict_pdu, "y", "n"),
+    ));
+    if form.active == StorageScpField::StrictPdu
+        && !form.touched.contains(&StorageScpField::StrictPdu)
+    {
+        lines.push(form_hint_line("tui.form.hint-strict-pdu"));
+    }
+
+    lines.push(form_field_line(
+        form.active == StorageScpField::MaxPduLength,
+        tr("tui.field.max-pdu"),
+        display_text_field(&form.max_pdu_length, &required),
+    ));
+    if form.touched.contains(&StorageScpField::MaxPduLength) {
+        let value = form.max_pdu_length.trim();
+        if value.is_empty() {
+            lines.push(form_err_line("tui.form.err-max-pdu-required"));
+        } else if value.parse::<u32>().ok().filter(|v| *v > 0).is_none() {
+            lines.push(form_err_line("tui.form.err-max-pdu-gt-zero"));
+        }
+    } else if form.active == StorageScpField::MaxPduLength && form.max_pdu_length.trim().is_empty()
+    {
+        lines.push(form_hint_line("tui.form.hint-max-pdu-bytes"));
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(
-        "Type to edit. Space toggles checkboxes. Tab/Shift-Tab or Up/Down move fields. Enter saves. Esc cancels.",
-    ));
+    lines.push(Line::from(tr("tui.form.limits-heading")));
+
+    let limit_fields = [
+        (
+            StorageScpField::MaxFileImportBytes,
+            "tui.form.field-max-file-import",
+            form.max_file_import_bytes.as_str(),
+            scp_limit_invalid(&form.max_file_import_bytes),
+        ),
+        (
+            StorageScpField::MaxZipEntryBytes,
+            "tui.form.field-max-zip-entry",
+            form.max_zip_entry_bytes.as_str(),
+            scp_limit_invalid(&form.max_zip_entry_bytes),
+        ),
+        (
+            StorageScpField::MaxZipTotalBytes,
+            "tui.form.field-max-zip-total",
+            form.max_zip_total_bytes.as_str(),
+            scp_limit_invalid(&form.max_zip_total_bytes),
+        ),
+        (
+            StorageScpField::MaxZipEntryCount,
+            "tui.form.field-max-zip-count",
+            form.max_zip_entry_count.as_str(),
+            scp_limit_count_invalid(&form.max_zip_entry_count),
+        ),
+        (
+            StorageScpField::MaxStoreObjectBytes,
+            "tui.form.field-max-store-object",
+            form.max_store_object_bytes.as_str(),
+            scp_limit_invalid(&form.max_store_object_bytes),
+        ),
+    ];
+    for (field, label_key, value, invalid) in limit_fields {
+        let label = tr(label_key);
+        lines.push(form_field_line(
+            form.active == field,
+            &label,
+            display_text_field(value, &unlimited),
+        ));
+        if form.touched.contains(&field) && invalid {
+            lines.push(form_err_text(format!(
+                "  {}",
+                tr1("tui.form.err-limit-gt-zero", "label", &label)
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(tr("tui.form.controls-scp")));
 
     // Global submit error summary.
     // Now that we show per-field inline validation hints, keep this as a lightweight summary.
@@ -1388,7 +1293,12 @@ pub(in crate::tui) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect
 /// let line: Line = crate::tui::render::modal::form_field_line(true, "Name", "Alice".to_string());
 /// assert!(format!("{:?}", line).contains("> Name: Alice"));
 /// ```
-pub(in crate::tui) fn form_field_line(active: bool, label: &str, value: String) -> Line<'static> {
+pub(in crate::tui) fn form_field_line(
+    active: bool,
+    label: impl AsRef<str>,
+    value: String,
+) -> Line<'static> {
+    let label = label.as_ref();
     let style = if active {
         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
     } else {
@@ -1420,10 +1330,10 @@ pub(in crate::tui) fn display_toggle_field(value: bool, label_on: &str, label_of
 /// assert_eq!(display_text_field("  ", "opt"), "<opt>");
 /// assert_eq!(display_text_field("foo ", "x"), "foo ");
 /// ```
-pub(in crate::tui) fn display_text_field(value: &str, placeholder: &str) -> String {
+pub(in crate::tui) fn display_text_field(value: &str, placeholder: impl AsRef<str>) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        format!("<{placeholder}>")
+        format!("<{}>", placeholder.as_ref())
     } else {
         value.to_string()
     }

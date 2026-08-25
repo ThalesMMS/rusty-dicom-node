@@ -127,13 +127,26 @@ impl ArchiveQuery {
 
     pub fn from_find_identifier(model: QueryModel, identifier: &DefaultMemObject) -> Result<Self> {
         let level_value = get_str_opt_from_mem(identifier, tags::QUERY_RETRIEVE_LEVEL)
-            .ok_or_else(|| anyhow!("C-FIND identifier is missing QueryRetrieveLevel"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    crate::error::msg_with(
+                        "error-net-missing-qr-level",
+                        [("operation", "C-FIND")],
+                    )
+                )
+            })?;
         let level = match level_value.as_str() {
             "PATIENT" => QueryLevel::Patient,
             "STUDY" => QueryLevel::Study,
             "SERIES" => QueryLevel::Series,
             "IMAGE" => QueryLevel::Image,
-            other => return Err(anyhow!("unsupported QueryRetrieveLevel: {other}")),
+            other => {
+                return Err(anyhow!(
+                    "{}",
+                    crate::error::msg_with("error-net-unsupported-qr-level", [("level", other)])
+                ))
+            }
         };
         let mut query = Self::new(model, level);
 
@@ -343,7 +356,10 @@ fn split_multi_value(value: &str) -> Vec<String> {
 
 fn validate_model_level(model: QueryModel, level: QueryLevel) -> Result<()> {
     if model == QueryModel::StudyRoot && level == QueryLevel::Patient {
-        return Err(anyhow!("Study Root queries do not support Patient level"));
+        return Err(anyhow!(
+            "{}",
+            crate::error::msg("error-archive-study-root-patient-query")
+        ));
     }
     Ok(())
 }

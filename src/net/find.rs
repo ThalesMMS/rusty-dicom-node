@@ -60,7 +60,7 @@ impl FindScu {
         let context = self.association_factory.first_context(&association)?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
 
         let command = create_find_request_command(
             criteria.model.find_sop_class_uid(),
@@ -71,7 +71,10 @@ impl FindScu {
         let mut identifier_bytes = Vec::with_capacity(1024);
         identifier
             .write_dataset_with_ts(&mut identifier_bytes, transfer_syntax)
-            .context("writing C-FIND identifier")?;
+            .context(crate::error::msg_with(
+                "error-net-writing-identifier",
+                [("operation", "C-FIND")],
+            ))?;
 
         AssociationFactory::send_command_and_dataset(
             &mut association,
@@ -103,16 +106,28 @@ impl FindScu {
                     let status = response
                         .command
                         .element(tags::STATUS)
-                        .context("missing C-FIND status")?
+                        .context(crate::error::msg_with(
+                            "error-net-missing-status",
+                            [("operation", "C-FIND")],
+                        ))?
                         .to_int::<u16>()
-                        .context("invalid C-FIND status")?;
+                        .context(crate::error::msg_with(
+                            "error-net-invalid-status",
+                            [("operation", "C-FIND")],
+                        ))?;
 
                     let Some(status_info) =
                         crate::net::dimse_status::interpret_status(Operation::CFind, status)
                     else {
                         return Err(anyhow!(MalformedDimseResponse::new(
                             Operation::CFind,
-                            format!("unknown or invalid C-FIND status 0x{status:04X}"),
+                            crate::error::msg_with(
+                                "error-net-unknown-status",
+                                [
+                                    ("operation", "C-FIND"),
+                                    ("status", format!("{status:04X}").as_str()),
+                                ],
+                            ),
                         )));
                     };
 
@@ -135,7 +150,10 @@ impl FindScu {
                                     dataset_bytes.as_slice(),
                                     transfer_syntax,
                                 )
-                                .context("reading C-FIND response dataset")?;
+                                .context(crate::error::msg_with(
+                                    "error-net-reading-response-dataset",
+                                    [("operation", "C-FIND")],
+                                ))?;
 
                             matches.push(query_match_from_response(&response_obj, criteria.level));
                         }
@@ -152,13 +170,16 @@ impl FindScu {
                                 "C-FIND completed with non-success remote status"
                             );
                             let _ = association.abort();
-                            return Err(anyhow!(
-                                "C-FIND failed with status 0x{status:04X} ({}){}",
-                                status_info.meaning,
-                                status_info
-                                    .hint
-                                    .map(|hint| format!("; hint: {hint}"))
-                                    .unwrap_or_default()
+                            let status_hex = format!("{status:04X}");
+                            let hint = crate::net::hint_suffix(status_info.hint);
+                            return Err(crate::net::err_with(
+                                "error-net-dimse-failed",
+                                [
+                                    ("operation", "C-FIND"),
+                                    ("status", status_hex.as_str()),
+                                    ("meaning", status_info.meaning),
+                                    ("hint", hint.as_str()),
+                                ],
                             ));
                         }
                     }
@@ -177,7 +198,11 @@ impl FindScu {
                         source = ?source,
                         "remote aborted association during C-FIND"
                     );
-                    return Err(anyhow!("remote aborted association: {:?}", source));
+                    let source = format!("{source:?}");
+                    return Err(crate::net::err_with(
+                        "error-net-remote-aborted",
+                        [("source", source.as_str())],
+                    ));
                 }
                 other => {
                     warn!(
@@ -188,7 +213,11 @@ impl FindScu {
                         pdu = ?other,
                         "unexpected PDU during C-FIND"
                     );
-                    return Err(anyhow!("unexpected PDU during C-FIND: {:?}", other));
+                    let pdu = format!("{other:?}");
+                    return Err(crate::net::err_with(
+                        "error-net-unexpected-pdu",
+                        [("operation", "C-FIND"), ("pdu", pdu.as_str())],
+                    ));
                 }
             }
         }
@@ -245,8 +274,13 @@ fn process_find_response_pdata(
     if command_field != 0x8020 {
         return Err(anyhow!(MalformedDimseResponse::new(
             Operation::CFind,
-            format!(
-                "unexpected CommandField 0x{command_field:04X} (expected 0x8020 for C-FIND-RSP)"
+            crate::error::msg_with(
+                "error-net-unexpected-command-field",
+                [
+                    ("actual", format!("{command_field:04X}").as_str()),
+                    ("expected", "8020"),
+                    ("rsp", "C-FIND-RSP"),
+                ],
             )
         )));
     }
@@ -261,7 +295,10 @@ fn ensure_complete_find_response(command_accumulator: &PDataAccumulator) -> Resu
     if command_accumulator.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!("incomplete C-FIND command response"))
+        Err(crate::net::err_with(
+            "error-net-incomplete-command",
+            [("operation", "C-FIND")],
+        ))
     }
 }
 

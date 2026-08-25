@@ -46,10 +46,14 @@ pub enum TuiReceiverMode {
 }
 
 impl TuiReceiverMode {
-    pub fn description(self) -> &'static str {
+    pub fn description(self) -> String {
         match self {
-            TuiReceiverMode::OnDemandForLocalRetrieve => "on-demand for local retrieve",
-            TuiReceiverMode::StandaloneStorageScp => "standalone via storage-scp",
+            TuiReceiverMode::OnDemandForLocalRetrieve => {
+                crate::i18n::t("tui-receiver-mode-on-demand")
+            }
+            TuiReceiverMode::StandaloneStorageScp => {
+                crate::i18n::t("tui-receiver-mode-standalone")
+            }
         }
     }
 }
@@ -103,7 +107,7 @@ pub fn build_tui_status_snapshot(
         config_path: paths.config_json.display().to_string(),
         data_dir: paths.base_dir.display().to_string(),
         log_dir: paths.logs_dir.display().to_string(),
-        receiver_mode: receiver_mode.description().to_string(),
+        receiver_mode: receiver_mode.description(),
     }
 }
 
@@ -122,40 +126,62 @@ fn validate_retrieve_outcome(
     match outcome.final_status {
         0x0000 => {}
         0xFE00 => {
-            return Err(anyhow!(
-                "retrieve was canceled by the remote node (status=0x{:04X}, completed={}, failed={}, warning={}, remaining={}, {})",
-                outcome.final_status,
-                outcome.completed,
-                outcome.failed,
-                outcome.warning,
-                outcome.remaining,
-                scp_stats
-            ));
+            return Err(anyhow!("{}", {
+                let status = format!("{:04X}", outcome.final_status);
+                let completed = outcome.completed.to_string();
+                let failed = outcome.failed.to_string();
+                let warning = outcome.warning.to_string();
+                let remaining = outcome.remaining.to_string();
+                crate::error::msg_with(
+                    "error-retrieve-canceled",
+                    [
+                        ("status", status.as_str()),
+                        ("completed", completed.as_str()),
+                        ("failed", failed.as_str()),
+                        ("warning", warning.as_str()),
+                        ("remaining", remaining.as_str()),
+                        ("scp", scp_stats.as_str()),
+                    ],
+                )
+            }));
         }
         status if is_move_warning_status(status) => {}
         _ => {
-            return Err(anyhow!(
-                "retrieve failed with status=0x{:04X} (completed={}, failed={}, warning={}, remaining={}, {})",
-                outcome.final_status,
-                outcome.completed,
-                outcome.failed,
-                outcome.warning,
-                outcome.remaining,
-                scp_stats
-            ));
+            return Err(anyhow!("{}", {
+                let status = format!("{:04X}", outcome.final_status);
+                let completed = outcome.completed.to_string();
+                let failed = outcome.failed.to_string();
+                let warning = outcome.warning.to_string();
+                let remaining = outcome.remaining.to_string();
+                crate::error::msg_with(
+                    "error-retrieve-failed",
+                    [
+                        ("status", status.as_str()),
+                        ("completed", completed.as_str()),
+                        ("failed", failed.as_str()),
+                        ("warning", warning.as_str()),
+                        ("remaining", remaining.as_str()),
+                        ("scp", scp_stats.as_str()),
+                    ],
+                )
+            }));
         }
     }
 
     if let Some(report) = scp_session_report {
         if outcome.completed > 0 && report.received == 0 {
-            return Err(anyhow!(
-                "retrieve finished for destination {} with completed={} but nothing arrived at the local storage SCP ({}). Check for AE mapping or port misconfiguration: ensure {} is free and that the remote node maps AE {} to this app",
-                move_destination,
-                outcome.completed,
-                scp_stats,
-                listener_addr,
-                move_destination
-            ));
+            return Err(anyhow!("{}", {
+                let completed = outcome.completed.to_string();
+                crate::error::msg_with(
+                    "error-retrieve-nothing-arrived",
+                    [
+                        ("destination", move_destination),
+                        ("completed", completed.as_str()),
+                        ("scp", scp_stats.as_str()),
+                        ("listener", listener_addr),
+                    ],
+                )
+            }));
         }
     }
 
@@ -247,7 +273,12 @@ impl AppServices {
         let lookup = normalize_node_lookup(id_or_name);
         self.db
             .get_remote_node(&lookup)?
-            .ok_or_else(|| anyhow!("remote node not found: {}", id_or_name))
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    crate::error::msg_with("error-node-not-found", [("id", id_or_name)])
+                )
+            })
     }
 
     pub fn add_node(&self, draft: RemoteNodeDraft) -> Result<RemoteNode> {
@@ -384,8 +415,8 @@ impl AppServices {
         let files = self.db.study_files(study_instance_uid)?;
         if files.is_empty() {
             return Err(anyhow!(
-                "no local files indexed for study {}",
-                study_instance_uid
+                "{}",
+                crate::error::msg_with("error-send-no-files-study", [("uid", study_instance_uid)])
             ));
         }
         self.store_scu.send_files(&node, &files)
@@ -402,8 +433,8 @@ impl AppServices {
         let files = self.db.study_files(study_instance_uid)?;
         if files.is_empty() {
             return Err(anyhow!(
-                "no local files indexed for study {}",
-                study_instance_uid
+                "{}",
+                crate::error::msg_with("error-send-no-files-study", [("uid", study_instance_uid)])
             ));
         }
         self.store_scu
@@ -419,8 +450,8 @@ impl AppServices {
         let files = self.db.series_files(series_instance_uid)?;
         if files.is_empty() {
             return Err(anyhow!(
-                "no local files indexed for series {}",
-                series_instance_uid
+                "{}",
+                crate::error::msg_with("error-send-no-files-series", [("uid", series_instance_uid)])
             ));
         }
         self.store_scu.send_files(&node, &files)
@@ -437,8 +468,8 @@ impl AppServices {
         let files = self.db.series_files(series_instance_uid)?;
         if files.is_empty() {
             return Err(anyhow!(
-                "no local files indexed for series {}",
-                series_instance_uid
+                "{}",
+                crate::error::msg_with("error-send-no-files-series", [("uid", series_instance_uid)])
             ));
         }
         self.store_scu
@@ -711,7 +742,10 @@ mod tests {
             snapshot.preferred_store_transfer_syntax,
             "JPEG 2000 Lossless"
         );
-        assert_eq!(snapshot.receiver_mode, "on-demand for local retrieve");
+        assert_eq!(
+            snapshot.receiver_mode,
+            crate::i18n::t("tui-receiver-mode-on-demand")
+        );
         assert_eq!(snapshot.config_path, "/tmp/rusty-dicom-node/config.json");
         assert_eq!(snapshot.data_dir, "/tmp/rusty-dicom-node");
         assert_eq!(snapshot.log_dir, "/tmp/rusty-dicom-node/logs");
@@ -743,7 +777,10 @@ mod tests {
             snapshot.preferred_store_transfer_syntax,
             "Explicit VR Little Endian"
         );
-        assert_eq!(snapshot.receiver_mode, "standalone via storage-scp");
+        assert_eq!(
+            snapshot.receiver_mode,
+            crate::i18n::t("tui-receiver-mode-standalone")
+        );
     }
 
     #[test]

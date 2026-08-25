@@ -174,6 +174,10 @@ pub struct AppConfig {
     /// Depth is measured relative to the import root. Set to null to disable.
     #[serde(default = "default_max_import_directory_depth")]
     pub max_import_directory_depth: Option<usize>,
+
+    /// Preferred UI locale (BCP-47). Used when `--lang` and `DICOM_NODE_LANG` are unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -201,6 +205,7 @@ impl Default for AppConfig {
             max_import_total_files: default_max_import_total_files(),
             max_import_path_length: default_max_import_path_length(),
             max_import_directory_depth: default_max_import_directory_depth(),
+            locale: None,
         }
     }
 }
@@ -298,14 +303,20 @@ impl AppConfig {
     fn validate(&self) -> Result<()> {
         fn ensure_nonzero_u64(name: &str, value: Option<u64>) -> Result<()> {
             if let Some(0) = value {
-                anyhow::bail!("invalid config: {name} must be > 0 (or null to disable)");
+                anyhow::bail!(
+                    "{}",
+                    crate::error::msg_with("error-config-must-be-positive", [("name", name)])
+                );
             }
             Ok(())
         }
 
         fn ensure_nonzero_usize(name: &str, value: Option<usize>) -> Result<()> {
             if let Some(0) = value {
-                anyhow::bail!("invalid config: {name} must be > 0 (or null to disable)");
+                anyhow::bail!(
+                    "{}",
+                    crate::error::msg_with("error-config-must-be-positive", [("name", name)])
+                );
             }
             Ok(())
         }
@@ -325,13 +336,31 @@ impl AppConfig {
             self.max_import_directory_depth,
         )?;
         if self.server_max_concurrent_associations == 0 {
-            anyhow::bail!("invalid config: server_max_concurrent_associations must be > 0");
+            anyhow::bail!(
+                "{}",
+                crate::error::msg_with(
+                    "error-config-must-be-positive-required",
+                    [("name", "server_max_concurrent_associations")],
+                )
+            );
         }
         if self.server_association_slot_wait_timeout_ms == 0 {
-            anyhow::bail!("invalid config: server_association_slot_wait_timeout_ms must be > 0");
+            anyhow::bail!(
+                "{}",
+                crate::error::msg_with(
+                    "error-config-must-be-positive-required",
+                    [("name", "server_association_slot_wait_timeout_ms")],
+                )
+            );
         }
         if self.server_shutdown_timeout_ms == 0 {
-            anyhow::bail!("invalid config: server_shutdown_timeout_ms must be > 0");
+            anyhow::bail!(
+                "{}",
+                crate::error::msg_with(
+                    "error-config-must-be-positive-required",
+                    [("name", "server_shutdown_timeout_ms")],
+                )
+            );
         }
 
         validate_ae_title(&self.local_ae_title)
@@ -348,14 +377,20 @@ impl AppConfig {
                 .with_context(|| format!("validating local AE title {}", ae.title))?;
             if ae.services.is_empty() {
                 anyhow::bail!(
-                    "invalid config: local AE {} must enable at least one service",
-                    ae.title
+                    "{}",
+                    crate::error::msg_with(
+                        "error-config-local-ae-no-services",
+                        [("title", ae.title.as_str())],
+                    )
                 );
             }
             if ae.max_concurrent_associations == 0 {
                 anyhow::bail!(
-                    "invalid config: local AE {} max_concurrent_associations must be > 0",
-                    ae.title
+                    "{}",
+                    crate::error::msg_with(
+                        "error-config-local-ae-max-assoc",
+                        [("title", ae.title.as_str())],
+                    )
                 );
             }
 
@@ -366,9 +401,13 @@ impl AppConfig {
                 )
             })?;
             if bind_addr.port() != 0 && !nonzero_ports.insert(bind_addr.port()) {
+                let port = bind_addr.port().to_string();
                 anyhow::bail!(
-                    "invalid config: duplicate local AE bind port {}",
-                    bind_addr.port()
+                    "{}",
+                    crate::error::msg_with(
+                        "error-config-duplicate-bind-port",
+                        [("port", port.as_str())],
+                    )
                 );
             }
         }

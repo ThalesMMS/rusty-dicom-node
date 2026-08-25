@@ -8,6 +8,7 @@ import {
   onImportProgress,
   runImport,
 } from "../api";
+import { useI18n } from "../i18n";
 import type { ActivityEntry, ImportProgress, ImportReport } from "../types";
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export default function ImportView({ onActivity }: Props) {
+  const { t } = useI18n();
   const [path, setPath] = useState("");
   const [recentPaths, setRecentPaths] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
@@ -37,7 +39,7 @@ export default function ImportView({ onActivity }: Props) {
   };
 
   const pickDirectory = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "Choose a directory to import" });
+    const selected = await open({ directory: true, multiple: false, title: t("desktop-import-pick-dir") });
     if (typeof selected === "string") {
       setPath(selected);
       rememberPath(selected);
@@ -47,8 +49,8 @@ export default function ImportView({ onActivity }: Props) {
   const pickZip = async () => {
     const selected = await open({
       multiple: false,
-      title: "Choose a ZIP archive to import",
-      filters: [{ name: "ZIP archives", extensions: ["zip"] }],
+      title: t("desktop-import-pick-zip"),
+      filters: [{ name: t("desktop-import-zip-filter"), extensions: ["zip"] }],
     });
     if (typeof selected === "string") {
       setPath(selected);
@@ -71,14 +73,19 @@ export default function ImportView({ onActivity }: Props) {
       setReport(result);
       onActivity({
         kind: "import",
-        title: "Import complete",
-        detail: `${result.accepted}/${result.scanned_files} accepted, ${result.duplicates} duplicates, ${formatBytes(result.stored_bytes)}`,
+        title: t("desktop-import-activity-ok"),
+        detail: t("desktop-import-activity-detail", {
+          accepted: result.accepted,
+          scanned: result.scanned_files,
+          duplicates: result.duplicates,
+          bytes: formatBytes(result.stored_bytes),
+        }),
         tone: result.failures.length > 0 || result.invalid_dicom > 0 || result.unreadable > 0 ? "warning" : "success",
       });
     } catch (e) {
       const message = String(e);
       setError(message);
-      onActivity({ kind: "import", title: "Import failed", detail: message, tone: "error" });
+      onActivity({ kind: "import", title: t("desktop-import-activity-fail"), detail: message, tone: "error" });
     } finally {
       setRunning(false);
       taskRef.current = null;
@@ -94,34 +101,41 @@ export default function ImportView({ onActivity }: Props) {
       ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
       : null;
 
+  const progressLabel =
+    progress == null
+      ? ""
+      : progress.total
+        ? `${progress.processed} / ${progress.total}`
+        : String(progress.processed);
+
   return (
     <>
       <div className="page-header compact">
         <div>
-          <h1>Import</h1>
-          <p>Index DICOM files from recursive folders or ZIP archives into the managed local archive.</p>
+          <h1>{t("desktop-import-title")}</h1>
+          <p>{t("desktop-import-subtitle")}</p>
         </div>
       </div>
 
       {error && <div className="alert error">{error}</div>}
 
       <div className="card">
-        <h2>Source</h2>
+        <h2>{t("desktop-import-source")}</h2>
         <div className="toolbar source-toolbar">
           <input
             className="mono"
-            placeholder="/path/to/dicom-folder or /path/to/archive.zip"
+            placeholder={t("desktop-import-placeholder")}
             value={path}
             onChange={(e) => setPath(e.target.value)}
             disabled={running}
           />
           <button className="btn" onClick={pickDirectory} disabled={running}>
             <FolderOpen size={15} />
-            Folder
+            {t("desktop-import-folder")}
           </button>
           <button className="btn" onClick={pickZip} disabled={running}>
             <FileArchive size={15} />
-            ZIP
+            {t("desktop-import-zip")}
           </button>
         </div>
         {recentPaths.length > 0 && (
@@ -136,23 +150,20 @@ export default function ImportView({ onActivity }: Props) {
         <div className="toolbar" style={{ marginTop: 14 }}>
           <button className="btn primary" onClick={start} disabled={running || !path.trim()}>
             {running ? <span className="spinner" /> : <Play size={15} />}
-            {running ? "Importing…" : "Start import"}
+            {running ? t("desktop-import-running") : t("desktop-import-start")}
           </button>
           {running && (
             <button className="btn danger" onClick={cancel}>
               <Ban size={15} />
-              Cancel
+              {t("desktop-common-cancel")}
             </button>
           )}
           <button className="btn ghost" onClick={() => setPath("")} disabled={running}>
             <RotateCcw size={15} />
-            Clear path
+            {t("desktop-import-clear-path")}
           </button>
           {running && progress && (
-            <span className="muted">
-              {progress.processed}
-              {progress.total ? ` / ${progress.total}` : ""} files
-            </span>
+            <span className="muted">{t("desktop-import-files-progress", { label: progressLabel })}</span>
           )}
         </div>
         {running && (
@@ -169,58 +180,60 @@ export default function ImportView({ onActivity }: Props) {
 
       {report && (
         <div className="card">
-          <h2>Import report</h2>
+          <h2>{t("desktop-import-report")}</h2>
           <div className="grid cols-4">
-            <ReportStat label="Scanned" value={report.scanned_files} />
-            <ReportStat label="Accepted" value={report.accepted} accent />
-            <ReportStat label="Duplicates" value={report.duplicates} />
-            <ReportStat label="Stored" value={formatBytes(report.stored_bytes)} icon />
+            <ReportStat label={t("desktop-import-scanned")} value={report.scanned_files} />
+            <ReportStat label={t("desktop-import-accepted")} value={report.accepted} accent />
+            <ReportStat label={t("desktop-import-duplicates")} value={report.duplicates} />
+            <ReportStat label={t("desktop-import-stored")} value={formatBytes(report.stored_bytes)} icon />
           </div>
           <div className="grid cols-3" style={{ marginTop: 14 }}>
             <div className="card micro-card">
-              <h3>Rejected</h3>
+              <h3>{t("desktop-import-rejected")}</h3>
               <dl className="kv dense">
-                <dt>Invalid DICOM</dt>
+                <dt>{t("desktop-import-invalid-dicom")}</dt>
                 <dd>{report.invalid_dicom}</dd>
-                <dt>Unreadable</dt>
+                <dt>{t("desktop-import-unreadable")}</dt>
                 <dd>{report.unreadable}</dd>
-                <dt>Skipped</dt>
+                <dt>{t("desktop-import-skipped")}</dt>
                 <dd>{report.skipped}</dd>
               </dl>
             </div>
             <div className="card micro-card">
-              <h3>Duplicates</h3>
+              <h3>{t("desktop-import-duplicates")}</h3>
               <dl className="kv dense">
-                <dt>SOP UID</dt>
+                <dt>{t("desktop-import-dup-sop")}</dt>
                 <dd>{report.duplicate_by_sop_instance_uid}</dd>
-                <dt>SHA-256</dt>
+                <dt>{t("desktop-import-dup-sha")}</dt>
                 <dd>{report.duplicate_by_sha256}</dd>
-                <dt>Total</dt>
+                <dt>{t("desktop-import-dup-total")}</dt>
                 <dd>{report.duplicates}</dd>
               </dl>
             </div>
             <div className="card micro-card">
-              <h3>Cleanup</h3>
+              <h3>{t("desktop-import-cleanup")}</h3>
               <dl className="kv dense">
-                <dt>Failed cleanup</dt>
+                <dt>{t("desktop-import-failed-cleanup")}</dt>
                 <dd>{report.failed_cleanup}</dd>
-                <dt>Failures</dt>
+                <dt>{t("desktop-import-failures")}</dt>
                 <dd>{report.failures.length}</dd>
-                <dt>Accepted bytes</dt>
+                <dt>{t("desktop-import-accepted-bytes")}</dt>
                 <dd>{formatBytes(report.stored_bytes)}</dd>
               </dl>
             </div>
           </div>
           {report.failures.length > 0 && (
             <div className="alert error" style={{ marginTop: 14, marginBottom: 0 }}>
-              <strong>{report.failures.length} failure(s):</strong>
+              <strong>{t("desktop-import-failures-heading", { count: report.failures.length })}</strong>
               <ul className="failure-list">
                 {report.failures.slice(0, 12).map((f, i) => (
                   <li key={i} className="mono">
                     {f}
                   </li>
                 ))}
-                {report.failures.length > 12 && <li>… and {report.failures.length - 12} more</li>}
+                {report.failures.length > 12 && (
+                  <li>{t("desktop-import-failures-more", { count: report.failures.length - 12 })}</li>
+                )}
               </ul>
             </div>
           )}

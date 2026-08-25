@@ -66,12 +66,12 @@ impl MoveScu {
         let context = self.association_factory.first_context(&association)?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
 
         let destination = request
             .move_destination
             .as_deref()
-            .ok_or_else(|| anyhow!("move_destination was not resolved"))?;
+            .ok_or_else(|| crate::net::err("error-net-move-destination-unresolved"))?;
 
         let command = create_move_request_command(
             request.model.move_sop_class_uid(),
@@ -83,7 +83,10 @@ impl MoveScu {
         let mut identifier_bytes = Vec::with_capacity(256);
         identifier
             .write_dataset_with_ts(&mut identifier_bytes, transfer_syntax)
-            .context("writing C-MOVE identifier")?;
+            .context(crate::error::msg_with(
+                "error-net-writing-identifier",
+                [("operation", "C-MOVE")],
+            ))?;
 
         let mut outcome = MoveOutcome {
             started_at: now_utc_string(),
@@ -137,7 +140,13 @@ impl MoveScu {
                     else {
                         return Err(anyhow!(MalformedDimseResponse::new(
                             Operation::CMove,
-                            format!("unknown or invalid C-MOVE status 0x{status:04X}"),
+                            crate::error::msg_with(
+                                "error-net-unknown-status",
+                                [
+                                    ("operation", "C-MOVE"),
+                                    ("status", format!("{status:04X}").as_str()),
+                                ],
+                            ),
                         )));
                     };
 
@@ -186,7 +195,11 @@ impl MoveScu {
                         source = ?source,
                         "remote aborted association during C-MOVE"
                     );
-                    return Err(anyhow!("remote aborted association: {:?}", source));
+                    let source = format!("{source:?}");
+                    return Err(crate::net::err_with(
+                        "error-net-remote-aborted",
+                        [("source", source.as_str())],
+                    ));
                 }
                 other => {
                     warn!(
@@ -197,7 +210,11 @@ impl MoveScu {
                         pdu = ?other,
                         "unexpected PDU during C-MOVE"
                     );
-                    return Err(anyhow!("unexpected PDU during C-MOVE: {:?}", other));
+                    let pdu = format!("{other:?}");
+                    return Err(crate::net::err_with(
+                        "error-net-unexpected-pdu",
+                        [("operation", "C-MOVE"), ("pdu", pdu.as_str())],
+                    ));
                 }
             }
         }
@@ -241,8 +258,13 @@ fn process_move_response_pdata(
     if command_field != 0x8021 {
         return Err(anyhow!(MalformedDimseResponse::new(
             Operation::CMove,
-            format!(
-                "unexpected CommandField 0x{command_field:04X} (expected 0x8021 for C-MOVE-RSP)"
+            crate::error::msg_with(
+                "error-net-unexpected-command-field",
+                [
+                    ("actual", format!("{command_field:04X}").as_str()),
+                    ("expected", "8021"),
+                    ("rsp", "C-MOVE-RSP"),
+                ],
             )
         )));
     }
@@ -278,7 +300,10 @@ fn parse_move_response_identifier(
 
     let identifier =
         DefaultMemObject::read_dataset_with_ts(identifier_bytes.as_slice(), transfer_syntax)
-            .context("reading C-MOVE response identifier")?;
+            .context(crate::error::msg_with(
+                "error-net-reading-identifier",
+                [("operation", "C-MOVE")],
+            ))?;
     Ok(Some(identifier))
 }
 
@@ -286,7 +311,10 @@ fn ensure_complete_move_response(command_accumulator: &PDataAccumulator) -> Resu
     if command_accumulator.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!("incomplete C-MOVE command response"))
+        Err(crate::net::err_with(
+            "error-net-incomplete-command",
+            [("operation", "C-MOVE")],
+        ))
     }
 }
 
@@ -294,7 +322,10 @@ fn ensure_complete_move_identifier(dataset_accumulator: &PDataAccumulator) -> Re
     if dataset_accumulator.is_empty() || dataset_accumulator.is_complete() {
         Ok(())
     } else {
-        Err(anyhow!("incomplete C-MOVE response identifier"))
+        Err(crate::net::err_with(
+            "error-net-incomplete-identifier",
+            [("operation", "C-MOVE")],
+        ))
     }
 }
 

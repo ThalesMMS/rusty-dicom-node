@@ -20,8 +20,17 @@ impl ExportTarget {
         match self {
             ExportTarget::Stdout => Ok(Box::new(std::io::stdout())),
             ExportTarget::File(path) => {
-                let f = std::fs::File::create(path)
-                    .map_err(|e| anyhow::anyhow!("creating export file {}: {e}", path.display()))?;
+                let f = std::fs::File::create(path).map_err(|e| {
+                    let displayed = path.display().to_string();
+                    let err = e.to_string();
+                    anyhow::anyhow!(
+                        "{}",
+                        crate::error::msg_with(
+                            "error-export-creating-file",
+                            [("path", displayed.as_str()), ("err", err.as_str())],
+                        )
+                    )
+                })?;
                 Ok(Box::new(std::io::BufWriter::new(f)))
             }
         }
@@ -31,7 +40,13 @@ impl ExportTarget {
 pub fn export_studies_json(studies: &[StudySummary], target: ExportTarget) -> anyhow::Result<()> {
     let mut w = target.open_writer()?;
     serde_json::to_writer_pretty(&mut w, studies)
-        .map_err(|e| anyhow::anyhow!("serializing studies JSON: {e}"))?;
+        .map_err(|e| {
+            let err = e.to_string();
+            anyhow::anyhow!(
+                "{}",
+                crate::error::msg_with("error-export-serializing-studies-json", [("err", err.as_str())])
+            )
+        })?;
     writeln!(&mut w).ok();
     Ok(())
 }
@@ -39,7 +54,13 @@ pub fn export_studies_json(studies: &[StudySummary], target: ExportTarget) -> an
 pub fn export_series_json(series: &[SeriesSummary], target: ExportTarget) -> anyhow::Result<()> {
     let mut w = target.open_writer()?;
     serde_json::to_writer_pretty(&mut w, series)
-        .map_err(|e| anyhow::anyhow!("serializing series JSON: {e}"))?;
+        .map_err(|e| {
+            let err = e.to_string();
+            anyhow::anyhow!(
+                "{}",
+                crate::error::msg_with("error-export-serializing-series-json", [("err", err.as_str())])
+            )
+        })?;
     writeln!(&mut w).ok();
     Ok(())
 }
@@ -183,7 +204,13 @@ pub fn export_studies_csv(studies: &[StudySummary], target: ExportTarget) -> any
         "series_count",
         "instance_count",
     ])
-    .map_err(|e| anyhow::anyhow!("writing studies CSV header: {e}"))?;
+    .map_err(|e| {
+        let err = e.to_string();
+        anyhow::anyhow!(
+            "{}",
+            crate::error::msg_with("error-export-writing-studies-csv-header", [("err", err.as_str())])
+        )
+    })?;
 
     for row in studies {
         let series_count = row.series_count.to_string();
@@ -198,11 +225,23 @@ pub fn export_studies_csv(studies: &[StudySummary], target: ExportTarget) -> any
             series_count.as_str(),
             instance_count.as_str(),
         ])
-        .map_err(|e| anyhow::anyhow!("writing studies CSV row: {e}"))?;
+        .map_err(|e| {
+            let err = e.to_string();
+            anyhow::anyhow!(
+                "{}",
+                crate::error::msg_with("error-export-writing-studies-csv-row", [("err", err.as_str())])
+            )
+        })?;
     }
 
     csv.flush()
-        .map_err(|e| anyhow::anyhow!("flushing studies CSV: {e}"))?;
+        .map_err(|e| {
+            let err = e.to_string();
+            anyhow::anyhow!(
+                "{}",
+                crate::error::msg_with("error-export-flushing-studies-csv", [("err", err.as_str())])
+            )
+        })?;
     Ok(())
 }
 
@@ -219,7 +258,13 @@ pub fn export_series_csv(series: &[SeriesSummary], target: ExportTarget) -> anyh
         "series_description",
         "instance_count",
     ])
-    .map_err(|e| anyhow::anyhow!("writing series CSV header: {e}"))?;
+    .map_err(|e| {
+        let err = e.to_string();
+        anyhow::anyhow!(
+            "{}",
+            crate::error::msg_with("error-export-writing-series-csv-header", [("err", err.as_str())])
+        )
+    })?;
 
     for row in series {
         let instance_count = row.instance_count.to_string();
@@ -231,11 +276,23 @@ pub fn export_series_csv(series: &[SeriesSummary], target: ExportTarget) -> anyh
             row.series_description.as_deref().unwrap_or(""),
             instance_count.as_str(),
         ])
-        .map_err(|e| anyhow::anyhow!("writing series CSV row: {e}"))?;
+        .map_err(|e| {
+            let err = e.to_string();
+            anyhow::anyhow!(
+                "{}",
+                crate::error::msg_with("error-export-writing-series-csv-row", [("err", err.as_str())])
+            )
+        })?;
     }
 
     csv.flush()
-        .map_err(|e| anyhow::anyhow!("flushing series CSV: {e}"))?;
+        .map_err(|e| {
+            let err = e.to_string();
+            anyhow::anyhow!(
+                "{}",
+                crate::error::msg_with("error-export-flushing-series-csv", [("err", err.as_str())])
+            )
+        })?;
     Ok(())
 }
 

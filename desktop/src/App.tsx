@@ -17,6 +17,7 @@ import type { LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getStatus } from "./api";
+import { LocaleToggle, useI18n } from "./i18n";
 import type { ActivityEntry, Status } from "./types";
 import Dashboard from "./views/Dashboard";
 import Query from "./views/Query";
@@ -30,17 +31,18 @@ type View = "dashboard" | "query" | "archive" | "nodes" | "import" | "server" | 
 
 type ActivityInput = Omit<ActivityEntry, "id" | "at">;
 
-const NAV: { id: View; label: string; icon: LucideIcon }[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "query", label: "Query / Retrieve", icon: Search },
-  { id: "archive", label: "Local Archive", icon: Database },
-  { id: "import", label: "Import", icon: HardDriveDownload },
-  { id: "nodes", label: "Remote Nodes", icon: Network },
-  { id: "server", label: "Storage Server", icon: ServerIcon },
-  { id: "logs", label: "Logs", icon: FileText },
+const NAV: { id: View; labelKey: string; icon: LucideIcon }[] = [
+  { id: "dashboard", labelKey: "desktop-nav-dashboard", icon: LayoutDashboard },
+  { id: "query", labelKey: "desktop-nav-query", icon: Search },
+  { id: "archive", labelKey: "desktop-nav-archive", icon: Database },
+  { id: "import", labelKey: "desktop-nav-import", icon: HardDriveDownload },
+  { id: "nodes", labelKey: "desktop-nav-nodes", icon: Network },
+  { id: "server", labelKey: "desktop-nav-server", icon: ServerIcon },
+  { id: "logs", labelKey: "desktop-nav-logs", icon: FileText },
 ];
 
 export default function App() {
+  const { t } = useI18n();
   const [view, setView] = useState<View>("dashboard");
   const [status, setStatus] = useState<Status | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -92,58 +94,82 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark">Dx</div>
           <div>
-            <div className="brand-title">DICOM Node</div>
+            <div className="brand-title">{t("desktop-brand-title")}</div>
             <div className="brand-sub">{status?.local_ae_title ?? "…"}</div>
           </div>
         </div>
         <nav className="nav">
           {NAV.filter((item) => !networkNav.has(item.id)).map((item) => (
-            <NavButton key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)} />
+            <NavButton
+              key={item.id}
+              icon={item.icon}
+              label={t(item.labelKey)}
+              active={view === item.id}
+              onClick={() => setView(item.id)}
+            />
           ))}
-          <div className="nav-label">Network</div>
+          <div className="nav-label">{t("desktop-nav-network")}</div>
           {NAV.filter((item) => networkNav.has(item.id)).map((item) => (
-            <NavButton key={item.id} item={item} active={view === item.id} onClick={() => setView(item.id)} />
+            <NavButton
+              key={item.id}
+              icon={item.icon}
+              label={t(item.labelKey)}
+              active={view === item.id}
+              onClick={() => setView(item.id)}
+            />
           ))}
         </nav>
         <div className="sidebar-footer">
           <span>
             <span className={`status-dot${status?.server_running ? " on" : ""}`} />
-            SCP {status?.server_running ? "listening" : "stopped"}
+            {status?.server_running
+              ? t("desktop-scp-listening")
+              : t("desktop-scp-stopped")}
           </span>
           <span>{status?.listener_addr ?? ""}</span>
+          <LocaleToggle />
         </div>
       </aside>
       <main className="main">
         <header className="operator-strip" onMouseDown={startWindowDrag}>
           <div className="operator-status">
             <span className={`status-dot${status?.server_running ? " on" : ""}`} />
-            <strong>{status?.local_ae_title ?? "Loading"}</strong>
+            <strong>{status?.local_ae_title ?? t("desktop-status-loading")}</strong>
             <span>{status?.listener_addr ?? "…"}</span>
-            <span className="strip-muted">PDU {status?.max_pdu_length ?? "…"}</span>
+            <span className="strip-muted">
+              {t("desktop-strip-pdu", { value: status?.max_pdu_length ?? "…" })}
+            </span>
           </div>
           <div className="strip-drag-spacer" data-tauri-drag-region />
           <div className="operator-actions">
-            <button className="icon-btn" title="Refresh status" onClick={refreshStatus}>
+            <button className="icon-btn" title={t("desktop-action-refresh-status")} onClick={refreshStatus}>
               <RefreshCw size={16} />
             </button>
-            <button className="icon-btn" title="Reveal log file" onClick={revealLog} disabled={!status?.active_log_file}>
+            <button
+              className="icon-btn"
+              title={t("desktop-action-reveal-log")}
+              onClick={revealLog}
+              disabled={!status?.active_log_file}
+            >
               <FileText size={16} />
             </button>
             <button className="btn sm" onClick={() => setView("query")}>
               <Search size={15} />
-              Query
+              {t("desktop-action-query")}
             </button>
             <button className="btn sm" onClick={() => setView("import")}>
               <Download size={15} />
-              Import
+              {t("desktop-action-import")}
             </button>
             <button className="btn sm" onClick={() => setView("archive")}>
               <Upload size={15} />
-              Send
+              {t("desktop-action-send")}
             </button>
             <button className="btn sm" onClick={() => setActivityOpen((open) => !open)}>
               <Activity size={15} />
-              Activity {activity.length > 0 ? activity.length : ""}
+              {activity.length > 0
+                ? t("desktop-action-activity", { count: activity.length })
+                : t("desktop-action-activity-empty")}
             </button>
           </div>
         </header>
@@ -176,37 +202,39 @@ export default function App() {
 }
 
 function NavButton({
-  item,
+  icon: Icon,
+  label,
   active,
   onClick,
 }: {
-  item: (typeof NAV)[number];
+  icon: LucideIcon;
+  label: string;
   active: boolean;
   onClick: () => void;
 }) {
-  const Icon = item.icon;
   return (
     <button className={`nav-item${active ? " active" : ""}`} onClick={onClick}>
       <Icon size={17} />
-      {item.label}
+      {label}
     </button>
   );
 }
 
 function ActivityPanel({ entries }: { entries: ActivityEntry[] }) {
+  const { t, locale } = useI18n();
   return (
     <aside className="activity-panel">
       <div className="panel-heading">
         <Activity size={16} />
-        <h2>Activity</h2>
+        <h2>{t("desktop-activity-title")}</h2>
       </div>
       {entries.length === 0 ? (
-        <div className="empty small">No session activity yet.</div>
+        <div className="empty small">{t("desktop-activity-empty")}</div>
       ) : (
         <div className="activity-list">
           {entries.map((entry) => (
             <div key={entry.id} className={`activity-item ${entry.tone ?? "info"}`}>
-              <div className="activity-time">{new Date(entry.at).toLocaleTimeString()}</div>
+              <div className="activity-time">{new Date(entry.at).toLocaleTimeString(locale)}</div>
               <div>
                 <div className="activity-title">{entry.title}</div>
                 {entry.detail && <div className="activity-detail">{entry.detail}</div>}

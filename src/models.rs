@@ -54,7 +54,10 @@ impl FromStr for QueryModel {
         match normalized.as_str() {
             "patient-root" | "patient" => Ok(Self::PatientRoot),
             "study-root" | "study" => Ok(Self::StudyRoot),
-            _ => Err(anyhow!("unsupported query model: {s}")),
+            _ => Err(anyhow!(
+                "{}",
+                crate::error::msg_with("error-query-unsupported-model", [("value", s)])
+            )),
         }
     }
 }
@@ -101,7 +104,10 @@ impl FromStr for QueryLevel {
             "study" => Ok(Self::Study),
             "series" => Ok(Self::Series),
             "image" | "instance" => Ok(Self::Image),
-            _ => Err(anyhow!("unsupported query level: {s}")),
+            _ => Err(anyhow!(
+                "{}",
+                crate::error::msg_with("error-query-unsupported-level", [("value", s)])
+            )),
         }
     }
 }
@@ -136,12 +142,12 @@ impl RemoteNodeDraft {
         let host = self.host.trim().to_string();
 
         if name.is_empty() {
-            return Err(anyhow!("node name cannot be empty"));
+            return Err(anyhow!("{}", crate::error::msg("error-node-name-empty")));
         }
         validate_ae_title(&ae_title)?;
         validate_port(self.port)?;
         if host.is_empty() {
-            return Err(anyhow!("node host cannot be empty"));
+            return Err(anyhow!("{}", crate::error::msg("error-node-host-empty")));
         }
 
         let now = Utc::now().to_rfc3339();
@@ -412,12 +418,19 @@ impl ImportReport {
             }
             ImportItemOutcome::Skipped { reason } => {
                 self.skipped += 1;
-                self.failures.push(format!("{source}: skipped: {reason}"));
+                let source = source.to_string();
+                self.failures.push(crate::error::msg_with(
+                    "error-import-skipped",
+                    [("source", source.as_str()), ("reason", reason.as_str())],
+                ));
             }
             ImportItemOutcome::FailedCleanup { reason } => {
                 self.failed_cleanup += 1;
-                self.failures
-                    .push(format!("{source}: cleanup failed: {reason}"));
+                let source = source.to_string();
+                self.failures.push(crate::error::msg_with(
+                    "error-import-cleanup-failed",
+                    [("source", source.as_str()), ("reason", reason.as_str())],
+                ));
             }
         }
     }
@@ -456,21 +469,20 @@ pub fn normalize_ae_title(ae_title: &str) -> String {
 pub fn validate_ae_title(ae_title: &str) -> anyhow::Result<()> {
     let trimmed = ae_title.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("AE title cannot be empty"));
+        return Err(anyhow!("{}", crate::error::msg("error-ae-empty")));
     }
     if ae_title != trimmed {
-        return Err(anyhow!(
-            "AE title cannot have leading or trailing whitespace"
-        ));
+        return Err(anyhow!("{}", crate::error::msg("error-ae-whitespace")));
     }
     if ae_title.chars().count() > 16 {
-        return Err(anyhow!("AE title must be at most 16 characters"));
+        return Err(anyhow!("{}", crate::error::msg("error-ae-too-long")));
     }
     for character in ae_title.chars() {
         if !matches!(character, 'A'..='Z' | '0'..='9' | ' ') {
+            let character = character.to_string();
             return Err(anyhow!(
-                "AE title contains invalid character '{}'; allowed: A-Z, 0-9, space",
-                character
+                "{}",
+                crate::error::msg_with("error-ae-invalid-char", [("character", character.as_str())])
             ));
         }
     }
@@ -480,14 +492,14 @@ pub fn validate_ae_title(ae_title: &str) -> anyhow::Result<()> {
 pub fn parse_port(value: &str) -> anyhow::Result<u16> {
     let port: u16 = value
         .parse()
-        .with_context(|| format!("invalid port: {value}"))?;
+        .with_context(|| crate::error::msg_with("error-port-invalid", [("value", value)]))?;
     validate_port(port)?;
     Ok(port)
 }
 
 fn validate_port(port: u16) -> anyhow::Result<()> {
     if port == 0 {
-        return Err(anyhow!("port must be between 1 and 65535"));
+        return Err(anyhow!("{}", crate::error::msg("error-port-range")));
     }
     Ok(())
 }

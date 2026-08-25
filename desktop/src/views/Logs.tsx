@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Check, FileText, FolderOpen, RefreshCw } from "lucide-react";
 import { tailLog } from "../api";
+import { useI18n } from "../i18n";
 import type { ActivityEntry, LogTailResult, Status } from "../types";
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export default function Logs({ status, onActivity }: Props) {
+  const { t } = useI18n();
   const [tail, setTail] = useState<LogTailResult | null>(null);
   const [maxLines, setMaxLines] = useState(200);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -23,15 +25,15 @@ export default function Logs({ status, onActivity }: Props) {
       if (recordActivity) {
         onActivity({
           kind: "log",
-          title: "Log refreshed",
-          detail: `${result.lines.length} line${result.lines.length === 1 ? "" : "s"} loaded`,
+          title: t("desktop-logs-activity-ok"),
+          detail: t("desktop-logs-activity-detail", { count: result.lines.length }),
           tone: "info",
         });
       }
     } catch (e) {
       const message = String(e);
       setError(message);
-      onActivity({ kind: "log", title: "Log refresh failed", detail: message, tone: "error" });
+      onActivity({ kind: "log", title: t("desktop-logs-activity-fail"), detail: message, tone: "error" });
     }
   };
 
@@ -51,17 +53,17 @@ export default function Logs({ status, onActivity }: Props) {
     <>
       <div className="page-header compact">
         <div>
-          <h1>Logs</h1>
-          <p>Bounded tail of the active desktop log file.</p>
+          <h1>{t("desktop-logs-title")}</h1>
+          <p>{t("desktop-logs-subtitle")}</p>
         </div>
         <div className="header-actions">
           <button className="btn" onClick={() => refresh(true)}>
             <RefreshCw size={15} />
-            Refresh
+            {t("desktop-common-refresh")}
           </button>
           <button className="btn" disabled={!path} onClick={() => path && revealItemInDir(path)}>
             <FolderOpen size={15} />
-            Reveal
+            {t("desktop-logs-reveal")}
           </button>
         </div>
       </div>
@@ -71,7 +73,7 @@ export default function Logs({ status, onActivity }: Props) {
       <div className="card log-controls">
         <div>
           <span className={`pill ${tail?.exists ? "ok" : "warn"}`}>
-            {tail?.exists ? "LOG FILE FOUND" : "WAITING FOR LOG FILE"}
+            {tail?.exists ? t("desktop-logs-found") : t("desktop-logs-waiting")}
           </span>
           <div className="mono path-line">{path ?? "—"}</div>
         </div>
@@ -82,36 +84,37 @@ export default function Logs({ status, onActivity }: Props) {
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
             />
-            <span>Auto refresh</span>
+            <span>{t("desktop-logs-auto-refresh")}</span>
           </label>
           <select value={maxLines} onChange={(e) => setMaxLines(Number(e.target.value))}>
-            <option value={100}>100 lines</option>
-            <option value={200}>200 lines</option>
-            <option value={500}>500 lines</option>
-            <option value={1000}>1000 lines</option>
+            {[100, 200, 500, 1000].map((count) => (
+              <option key={count} value={count}>
+                {t("desktop-logs-lines", { count })}
+              </option>
+            ))}
           </select>
         </div>
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
         <div className="pane-heading-row">
-          <h2>Tail</h2>
-          {tail?.truncated && <span className="pill warn">TRUNCATED</span>}
+          <h2>{t("desktop-logs-tail")}</h2>
+          {tail?.truncated && <span className="pill warn">{t("desktop-logs-truncated")}</span>}
           {autoRefresh && (
             <span className="pill ok">
-              <Check size={11} /> AUTO
+              <Check size={11} /> {t("desktop-logs-auto")}
             </span>
           )}
         </div>
         {!tail ? (
-          <div className="empty small">Loading log…</div>
+          <div className="empty small">{t("desktop-logs-loading")}</div>
         ) : !tail.exists ? (
           <div className="empty small">
             <FileText size={18} />
-            The active log file has not been created yet.
+            {t("desktop-logs-missing")}
           </div>
         ) : tail.lines.length === 0 ? (
-          <div className="empty small">The log file is empty.</div>
+          <div className="empty small">{t("desktop-logs-empty")}</div>
         ) : (
           <pre className="log-output">
             {tail.lines.map((line, index) => (

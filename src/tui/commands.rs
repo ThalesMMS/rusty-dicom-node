@@ -35,43 +35,25 @@ pub(super) fn node_patch_values_from_kv(
     })
 }
 
-pub(super) fn tui_command_help_lines() -> &'static [&'static str] {
-    &[
-        "commands:",
-        "  note: the footer shows contextual 'Next:' suggestions based on the focused pane and selection.",
-        "        They are hints only; you can always type any command.",
-        "  refresh",
-        "  note: canonical names match CLI flags without '--', using underscores.",
-        "  node add name=<n> ae=<AE> (or ae_title=<AE>) host=<host> port=<port>",
-        "           [dest=<AE> (or move_destination=<AE>)] [notes=..]",
-        "  node edit target=<id|name> [name=..] [ae=<AE> (or ae_title=<AE>)]",
-        "            [host=..] [port=..] [dest=<AE> (or move_destination=<AE>)] [notes=..]",
-        "  node delete target=<id|name> (or id=<id> / name=<name>)",
-        "  import path=<folder|file|zip>",
-        "  query node=<name> [model=patient|study] [level=patient|study|series|image]",
-        "        [patient_name=..] [patient_id=..] [accession=<n> (or accession_number=<n>)]",
-        "        [study_uid=<uid> (or study_instance_uid=<uid>)]",
-        "        [series_uid=<uid> (or series_instance_uid=<uid>)]",
-        "        [instance_uid=<uid> (or sop_instance_uid=<uid>)]",
-        "        [date_from=YYYYMMDD (or study_date_from=YYYYMMDD)]",
-        "        [date_to=YYYYMMDD (or study_date_to=YYYYMMDD)] [modality=..] [study_description=..]",
-        "  retrieve node=<name> study_uid=<uid> (or study_instance_uid=<uid>)",
-        "           [series_uid=.. (or series_instance_uid=..)]",
-        "           [instance_uid=.. (or sop_instance_uid=..)]",
-        "           [dest=<AE> (or move_destination=<AE>)]",
-        "  send-study node=<name> (or destination_node=<name>)",
-        "             study_uid=<uid> (or study_instance_uid=<uid> or study=<uid>)",
-        "  send-series node=<name> (or destination_node=<name>)",
-        "              series_uid=<uid> (or series_instance_uid=<uid> or series=<uid>)",
-        "  local studies [patient_name=..] [patient_id=..] [study_description=..]",
-        "              [study_date=VALUE|START..END|START..|..END]",
-        "              [modality=CT,MR,..] [imported_at=VALUE|START..END|START..|..END]",
-        "              [duplicate=true|false]",
-        "  local series study_uid=<uid> (or study_instance_uid=<uid> or study=<uid>)",
-        "  local instances series_uid=<uid> (or series_instance_uid=<uid> or series=<uid>)",
-        "  cancel (alias: stop)",
-        "  quit",
-    ]
+fn ftl_lines(key: &str) -> Vec<String> {
+    tr(key)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+pub(super) fn tui_command_help_lines() -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(tr("tui.command.help-heading"));
+    lines.push(format!("  {}", tr("tui.command.help-next-1")));
+    lines.push(format!("        {}", tr("tui.command.help-next-2")));
+    lines.push(format!("  {}", tr("tui-command-help-refresh")));
+    lines.push(format!("  {}", tr("tui.command.help-canonical")));
+    lines.extend(ftl_lines("tui.command.help-cmds"));
+    lines.push(format!("  {}", tr("tui.command.help-cancel")));
+    lines.push(format!("  {}", tr("tui-command-help-quit")));
+    lines
 }
 
 pub(super) fn parse_key_values(args: &[String]) -> anyhow::Result<HashMap<String, String>> {
@@ -79,7 +61,7 @@ pub(super) fn parse_key_values(args: &[String]) -> anyhow::Result<HashMap<String
     for arg in args {
         let (key, value) = arg
             .split_once('=')
-            .ok_or_else(|| anyhow!("expected key=value argument, got {arg}"))?;
+            .ok_or_else(|| anyhow!("{}", tr1("error-expected-kv", "arg", arg)))?;
         out.insert(key.to_string(), value.to_string());
     }
     Ok(out)
@@ -160,7 +142,7 @@ pub(super) fn required_kv<'a>(
 ) -> anyhow::Result<&'a str> {
     map.get(key)
         .map(String::as_str)
-        .ok_or_else(|| anyhow!("missing required argument: {key}"))
+        .ok_or_else(|| anyhow!("{}", tr1("error-missing-required-arg", "key", key)))
 }
 
 pub(super) fn get_kv_alt<'a>(map: &'a HashMap<String, String>, keys: &[&str]) -> Option<&'a str> {
@@ -173,7 +155,12 @@ pub(super) fn required_kv_alt<'a>(
     keys: &[&str],
 ) -> anyhow::Result<&'a str> {
     get_kv_alt(map, keys)
-        .ok_or_else(|| anyhow!("missing required argument: one of {}", keys.join(", ")))
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                tr1("error-missing-required-arg-one-of", "keys", keys.join(", "))
+            )
+        })
 }
 
 pub(super) fn required_trimmed_kv<'a>(
@@ -182,7 +169,7 @@ pub(super) fn required_trimmed_kv<'a>(
 ) -> anyhow::Result<&'a str> {
     let value = required_kv(map, key)?.trim();
     if value.is_empty() {
-        Err(anyhow!("missing required argument: {key}"))
+        Err(anyhow!("{}", tr1("error-missing-required-arg", "key", key)))
     } else {
         Ok(value)
     }
@@ -199,8 +186,8 @@ pub(super) fn required_trimmed_kv_alt<'a>(
         }
     }
     Err(anyhow!(
-        "missing required argument: one of {}",
-        keys.join(", ")
+        "{}",
+        tr1("error-missing-required-arg-one-of", "keys", keys.join(", "))
     ))
 }
 
@@ -211,6 +198,9 @@ mod tests {
 
     #[test]
     fn help_command_lists_aliases_and_canonical_names() {
+        crate::i18n::set_thread_locale(Some(
+            "en-US".parse().expect("valid BCP-47 locale"),
+        ));
         let services = test_services();
         let mut app = TuiApp::new(services.services.clone());
 
@@ -230,6 +220,24 @@ mod tests {
         assert!(output.contains("date_from=YYYYMMDD (or study_date_from=YYYYMMDD)"));
         assert!(output.contains("study_uid=<uid> (or study_instance_uid=<uid> or study=<uid>)"));
         assert!(output.contains("node=<name> (or destination_node=<name>)"));
+    }
+
+    #[test]
+    fn command_help_heading_follows_locale() {
+        crate::i18n::set_thread_locale(Some(
+            "pt-BR".parse().expect("valid BCP-47 locale"),
+        ));
+        let pt = tui_command_help_lines();
+        assert_eq!(pt[0], "comandos:");
+        assert!(pt.iter().any(|line| line.contains("node add name=<n>")));
+        assert!(pt.iter().any(|line| line.contains("cancel (apelido: stop)")));
+
+        crate::i18n::set_thread_locale(Some(
+            "en-US".parse().expect("valid BCP-47 locale"),
+        ));
+        let en = tui_command_help_lines();
+        assert_eq!(en[0], "commands:");
+        assert!(en.iter().any(|line| line.contains("cancel (alias: stop)")));
     }
     #[test]
     fn query_command_parser_accepts_short_and_canonical_aliases() {

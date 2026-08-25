@@ -8,6 +8,7 @@ pub mod dicom;
 pub mod error;
 pub mod export;
 pub mod filters;
+pub mod i18n;
 pub mod importer;
 pub mod models;
 pub mod net;

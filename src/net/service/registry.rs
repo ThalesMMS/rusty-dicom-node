@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DimseServiceKind {
@@ -113,8 +113,13 @@ impl ServiceClassRegistry {
             .iter()
             .find(|provider| provider.supports_command(command_field, abstract_syntax))
             .ok_or_else(|| {
-                anyhow!(
-                    "no DIMSE provider registered for command 0x{command_field:04X} and abstract syntax {abstract_syntax}"
+                let command = format!("{command_field:04X}");
+                crate::net::err_with(
+                    "error-net-no-dimse-provider",
+                    [
+                        ("command", command.as_str()),
+                        ("syntax", abstract_syntax),
+                    ],
                 )
             })
     }

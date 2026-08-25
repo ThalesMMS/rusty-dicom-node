@@ -73,7 +73,11 @@ impl Importer {
     ) -> Result<ImportReport> {
         cancel::ensure_not_cancelled(cancel_flag)?;
         if !path.exists() {
-            return Err(anyhow!("Import path does not exist: {}", path.display()));
+            let path = path.display().to_string();
+            return Err(anyhow!(
+                "{}",
+                crate::error::msg_with("error-import-path-does-not-exist", [("path", path.as_str())])
+            ));
         }
 
         if path.is_dir() {
@@ -159,7 +163,10 @@ impl Importer {
                 record_unreadable_with_warning(
                     report,
                     path.display(),
-                    ImportRejectionReason::Unreadable(format!("opening file: {err}")),
+                    ImportRejectionReason::Unreadable({
+                        let err = err.to_string();
+                        crate::error::msg_with("error-import-opening-file", [("err", err.as_str())])
+                    }),
                 );
                 return Ok(None);
             }
@@ -181,7 +188,10 @@ impl Importer {
                 record_unreadable_with_warning(
                     report,
                     path.display(),
-                    ImportRejectionReason::Unreadable(format!("reading file: {err}")),
+                    ImportRejectionReason::Unreadable({
+                        let err = err.to_string();
+                        crate::error::msg_with("error-import-reading-file", [("err", err.as_str())])
+                    }),
                 );
                 return Ok(None);
             }
@@ -198,7 +208,13 @@ impl Importer {
                 record_invalid_dicom_with_warning(
                     report,
                     path.display(),
-                    ImportRejectionReason::InvalidDicom(format!("DICOM parse failed: {err}")),
+                    ImportRejectionReason::InvalidDicom({
+                        let err = err.to_string();
+                        crate::error::msg_with(
+                            "error-import-dicom-parse-failed",
+                            [("err", err.as_str())],
+                        )
+                    }),
                 );
                 return Ok(None);
             }
@@ -234,9 +250,13 @@ impl Importer {
                     record_invalid_dicom_with_warning(
                         report,
                         source_path,
-                        ImportRejectionReason::InvalidDicom(format!(
-                            "DICOM validation failed: {err}"
-                        )),
+                        ImportRejectionReason::InvalidDicom({
+                            let err = err.to_string();
+                            crate::error::msg_with(
+                                "error-import-dicom-validation-failed",
+                                [("err", err.as_str())],
+                            )
+                        }),
                     );
                     Ok(None)
                 }
@@ -252,9 +272,10 @@ impl Importer {
     ) -> Result<()> {
         if cancel::is_cancelled(cancel_flag) {
             remove_file_if_exists(staged_path).with_context(|| {
-                format!(
-                    "removing staged file after cancellation {}",
-                    staged_path.display()
+                let path = staged_path.display().to_string();
+                crate::error::msg_with(
+                    "error-import-removing-staged-after-cancel",
+                    [("path", path.as_str())],
                 )
             })?;
         }

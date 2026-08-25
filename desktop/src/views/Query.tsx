@@ -9,6 +9,7 @@ import {
   runQuery,
   runRetrieve,
 } from "../api";
+import { useI18n } from "../i18n";
 import type {
   ActivityEntry,
   MoveOutcome,
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export default function Query({ onActivity }: Props) {
+  const { t, locale } = useI18n();
   const [nodes, setNodes] = useState<RemoteNode[]>([]);
   const [node, setNode] = useState("");
   const [level, setLevel] = useState<QueryLevel>("Study");
@@ -94,15 +96,20 @@ export default function Query({ onActivity }: Props) {
       if (matches.length > 0) setSelectedKey(matchKey(matches[0]));
       onActivity({
         kind: "query",
-        title: `C-FIND ${node}`,
-        detail: `${matches.length} match${matches.length === 1 ? "" : "es"} at ${level} level`,
+        title: t("desktop-query-activity-ok", { node }),
+        detail: t("desktop-query-activity-detail", { count: matches.length, level }),
         tone: "success",
       });
     } catch (err) {
       const message = String(err);
       setError(message);
       setResults(null);
-      onActivity({ kind: "query", title: `C-FIND ${node} failed`, detail: message, tone: "error" });
+      onActivity({
+        kind: "query",
+        title: t("desktop-query-activity-fail", { node }),
+        detail: message,
+        tone: "error",
+      });
     } finally {
       setQuerying(false);
       queryTask.current = null;
@@ -115,7 +122,7 @@ export default function Query({ onActivity }: Props) {
 
   const retrieve = async (match: QueryMatch) => {
     if (!match.study_instance_uid) {
-      setError("Match has no StudyInstanceUID; cannot retrieve.");
+      setError(t("desktop-query-missing-study-uid"));
       return;
     }
     const key = matchKey(match);
@@ -137,14 +144,23 @@ export default function Query({ onActivity }: Props) {
       setLastOutcome(outcome);
       onActivity({
         kind: "retrieve",
-        title: `C-MOVE ${node}`,
-        detail: `completed=${outcome.completed}, warning=${outcome.warning}, failed=${outcome.failed}`,
+        title: t("desktop-query-retrieve-activity-ok", { node }),
+        detail: t("desktop-query-retrieve-activity-detail", {
+          completed: outcome.completed,
+          warning: outcome.warning,
+          failed: outcome.failed,
+        }),
         tone: outcome.failed > 0 ? "warning" : "success",
       });
     } catch (err) {
       const message = String(err);
       setError(message);
-      onActivity({ kind: "retrieve", title: `C-MOVE ${node} failed`, detail: message, tone: "error" });
+      onActivity({
+        kind: "retrieve",
+        title: t("desktop-query-retrieve-activity-fail", { node }),
+        detail: message,
+        tone: "error",
+      });
     } finally {
       setRetrieving(null);
     }
@@ -154,28 +170,31 @@ export default function Query({ onActivity }: Props) {
     <>
       <div className="page-header compact">
         <div>
-          <h1>Query / Retrieve</h1>
-          <p>C-FIND a remote node, inspect matches, then C-MOVE into the local archive.</p>
+          <h1>{t("desktop-query-title")}</h1>
+          <p>{t("desktop-query-subtitle")}</p>
         </div>
       </div>
 
       {error && <div className="alert error">{error}</div>}
       {lastOutcome && (
         <div className={`alert ${lastOutcome.failed > 0 ? "error" : "success"}`}>
-          Retrieve finished: completed {lastOutcome.completed}, warnings {lastOutcome.warning}, failed{" "}
-          {lastOutcome.failed}.
+          {t("desktop-query-retrieve-finished", {
+            completed: lastOutcome.completed,
+            warning: lastOutcome.warning,
+            failed: lastOutcome.failed,
+          })}
         </div>
       )}
 
       <div className="workspace-grid">
         <section className="card">
-          <h2>Search criteria</h2>
+          <h2>{t("desktop-query-search-criteria")}</h2>
           <form onSubmit={submit}>
             <div className="form-grid compact">
               <div className="field span-2">
-                <label>Remote node</label>
+                <label>{t("desktop-query-remote-node")}</label>
                 <select value={node} onChange={(e) => setNode(e.target.value)}>
-                  {nodes.length === 0 && <option value="">No nodes configured</option>}
+                  {nodes.length === 0 && <option value="">{t("desktop-query-no-nodes")}</option>}
                   {nodes.map((n) => (
                     <option key={n.id} value={n.name}>
                       {n.name} ({n.ae_title}@{n.host}:{n.port})
@@ -184,63 +203,75 @@ export default function Query({ onActivity }: Props) {
                 </select>
               </div>
               <div className="field">
-                <label>Level</label>
+                <label>{t("desktop-query-level")}</label>
                 <select value={level} onChange={(e) => setLevel(e.target.value as QueryLevel)}>
-                  <option value="Study">Study</option>
-                  <option value="Series">Series</option>
+                    <option value="Study">{t("common-study")}</option>
+                  <option value="Series">{t("common-series")}</option>
                   <option value="Image">Image</option>
                 </select>
               </div>
               <div className="field">
-                <label>Modality</label>
-                <input placeholder="CT, MR, …" value={form.modality} onChange={set("modality")} />
+                <label>{t("desktop-query-modality")}</label>
+                <input
+                  placeholder={t("desktop-query-placeholder-modality")}
+                  value={form.modality}
+                  onChange={set("modality")}
+                />
               </div>
               <div className="field">
-                <label>Patient name</label>
-                <input placeholder="DOE^JOHN or DOE*" value={form.patient_name} onChange={set("patient_name")} />
+                <label>{t("desktop-query-patient-name")}</label>
+                <input
+                  placeholder={t("desktop-query-placeholder-patient")}
+                  value={form.patient_name}
+                  onChange={set("patient_name")}
+                />
               </div>
               <div className="field">
-                <label>Patient ID</label>
+                <label>{t("desktop-query-patient-id")}</label>
                 <input value={form.patient_id} onChange={set("patient_id")} />
               </div>
               <div className="field">
-                <label>Accession #</label>
+                <label>{t("desktop-query-accession")}</label>
                 <input value={form.accession_number} onChange={set("accession_number")} />
               </div>
               <div className="field">
-                <label>Study description</label>
-                <input placeholder="CHEST*" value={form.study_description} onChange={set("study_description")} />
+                <label>{t("desktop-query-study-description")}</label>
+                <input
+                  placeholder={t("desktop-query-placeholder-description")}
+                  value={form.study_description}
+                  onChange={set("study_description")}
+                />
               </div>
               <div className="field">
-                <label>Study date from</label>
+                <label>{t("desktop-query-date-from")}</label>
                 <input type="date" value={form.study_date_from} onChange={set("study_date_from")} />
               </div>
               <div className="field">
-                <label>Study date to</label>
+                <label>{t("desktop-query-date-to")}</label>
                 <input type="date" value={form.study_date_to} onChange={set("study_date_to")} />
               </div>
               <div className="field span-2">
-                <label>Study Instance UID</label>
+                <label>{t("desktop-query-study-uid")}</label>
                 <input className="mono" value={form.study_instance_uid} onChange={set("study_instance_uid")} />
               </div>
               <div className="field span-2">
-                <label>Series Instance UID</label>
+                <label>{t("desktop-query-series-uid")}</label>
                 <input className="mono" value={form.series_instance_uid} onChange={set("series_instance_uid")} />
               </div>
               <div className="field span-2">
-                <label>SOP Instance UID</label>
+                <label>{t("desktop-query-sop-uid")}</label>
                 <input className="mono" value={form.sop_instance_uid} onChange={set("sop_instance_uid")} />
               </div>
             </div>
             <div className="toolbar" style={{ marginTop: 14 }}>
               <button type="submit" className="btn primary" disabled={querying || !node}>
                 {querying ? <span className="spinner" /> : <Search size={15} />}
-                {querying ? "Querying…" : "Run C-FIND"}
+                {querying ? t("desktop-query-querying") : t("desktop-query-run")}
               </button>
               {querying && (
                 <button type="button" className="btn danger" onClick={cancelQuery}>
                   <Ban size={15} />
-                  Cancel
+                  {t("desktop-common-cancel")}
                 </button>
               )}
               <button
@@ -253,33 +284,33 @@ export default function Query({ onActivity }: Props) {
                 }}
               >
                 <RotateCcw size={15} />
-                Clear
+                {t("desktop-common-clear")}
               </button>
-              {results && <span className="muted">{results.length} matches</span>}
+              {results && <span className="muted">{t("desktop-query-matches", { count: results.length })}</span>}
             </div>
           </form>
         </section>
 
         <aside className="card detail-card">
-          <h2>Selected match</h2>
+          <h2>{t("desktop-query-selected-match")}</h2>
           {selected ? (
             <>
               <dl className="kv dense">
-                <dt>Patient</dt>
+                <dt>{t("desktop-table-patient")}</dt>
                 <dd>{formatPersonName(selected.patient_name)}</dd>
-                <dt>Patient ID</dt>
+                <dt>{t("desktop-table-patient-id")}</dt>
                 <dd>{selected.patient_id ?? "—"}</dd>
-                <dt>Date</dt>
-                <dd>{formatDicomDate(selected.study_date)}</dd>
-                <dt>Level</dt>
+                <dt>{t("desktop-table-date")}</dt>
+                <dd>{formatDicomDate(selected.study_date, locale)}</dd>
+                <dt>{t("desktop-query-level")}</dt>
                 <dd>{selected.level}</dd>
-                <dt>Modality</dt>
+                <dt>{t("desktop-query-modality")}</dt>
                 <dd>{selected.modality ?? "—"}</dd>
-                <dt>Study UID</dt>
+                <dt>{t("desktop-query-kv-study-uid")}</dt>
                 <dd>{selected.study_instance_uid ?? "—"}</dd>
-                <dt>Series UID</dt>
+                <dt>{t("desktop-query-kv-series-uid")}</dt>
                 <dd>{selected.series_instance_uid ?? "—"}</dd>
-                <dt>SOP UID</dt>
+                <dt>{t("desktop-query-kv-sop-uid")}</dt>
                 <dd>{selected.sop_instance_uid ?? "—"}</dd>
               </dl>
               <button
@@ -289,29 +320,29 @@ export default function Query({ onActivity }: Props) {
                 style={{ marginTop: 14 }}
               >
                 {retrieving === matchKey(selected) ? <span className="spinner" /> : <Download size={15} />}
-                Retrieve selected
+                {t("desktop-query-retrieve-selected")}
               </button>
             </>
           ) : (
-            <div className="empty small">Run a query and select a match.</div>
+            <div className="empty small">{t("desktop-query-select-hint")}</div>
           )}
         </aside>
       </div>
 
       {results && (
         <div className="card" style={{ marginTop: 14 }}>
-          <h2>Results</h2>
+          <h2>{t("desktop-query-results")}</h2>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Patient</th>
-                  <th>Patient ID</th>
-                  <th>Date</th>
-                  <th>Modality</th>
-                  <th>Description</th>
-                  <th>Accession</th>
-                  <th>Series</th>
+                  <th>{t("desktop-table-patient")}</th>
+                  <th>{t("desktop-table-patient-id")}</th>
+                  <th>{t("desktop-table-date")}</th>
+                  <th>{t("desktop-table-modality")}</th>
+                  <th>{t("desktop-table-description")}</th>
+                  <th>{t("desktop-table-accession")}</th>
+                  <th>{t("desktop-table-series")}</th>
                   <th />
                 </tr>
               </thead>
@@ -319,7 +350,7 @@ export default function Query({ onActivity }: Props) {
                 {results.length === 0 && (
                   <tr>
                     <td colSpan={8} className="empty">
-                      No matches.
+                      {t("desktop-query-no-matches")}
                     </td>
                   </tr>
                 )}
@@ -330,7 +361,7 @@ export default function Query({ onActivity }: Props) {
                     <tr key={key} className={isSelected ? "selected-row" : ""} onClick={() => setSelectedKey(key)}>
                       <td>{formatPersonName(m.patient_name)}</td>
                       <td className="mono">{m.patient_id ?? "—"}</td>
-                      <td className="mono">{formatDicomDate(m.study_date)}</td>
+                      <td className="mono">{formatDicomDate(m.study_date, locale)}</td>
                       <td>{m.modality ? <span className="pill accent">{m.modality}</span> : "—"}</td>
                       <td className="dim">{m.study_description ?? m.series_description ?? "—"}</td>
                       <td className="mono dim">{m.accession_number ?? "—"}</td>
@@ -347,7 +378,7 @@ export default function Query({ onActivity }: Props) {
                           }}
                         >
                           {retrieving === key && <span className="spinner" />}
-                          Retrieve
+                          {t("desktop-query-retrieve")}
                         </button>
                       </td>
                     </tr>

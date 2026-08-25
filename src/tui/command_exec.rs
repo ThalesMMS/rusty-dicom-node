@@ -2,7 +2,7 @@ use super::*;
 
 impl TuiApp {
     pub(super) fn execute_command(&mut self, command: &str) -> anyhow::Result<()> {
-        let tokens = shell_words::split(command).context("parsing command")?;
+        let tokens = shell_words::split(command).context(tr("error-parsing-command"))?;
         if tokens.is_empty() {
             return Ok(());
         }
@@ -10,12 +10,12 @@ impl TuiApp {
         match tokens[0].as_str() {
             "help" => {
                 for line in tui_command_help_lines() {
-                    self.log(*line);
+                    self.log(line);
                 }
             }
             "refresh" => {
                 self.refresh_all()?;
-                self.log("refreshed");
+                self.log(tr("tui-log-refreshed"));
             }
             "quit" | "exit" => {
                 self.should_quit = true;
@@ -30,7 +30,7 @@ impl TuiApp {
             "cancel" | "stop" => {
                 self.cancel_active_task();
             }
-            other => return Err(anyhow!("unknown command: {other}")),
+            other => return Err(anyhow!("{}", tr1("error-unknown-command", "command", other))),
         }
 
         Ok(())
@@ -39,7 +39,7 @@ impl TuiApp {
     pub(super) fn exec_node(&mut self, args: &[String]) -> anyhow::Result<()> {
         let (subcommand, rest) = args
             .split_first()
-            .ok_or_else(|| anyhow!("node subcommand required"))?;
+            .ok_or_else(|| anyhow!("{}", tr("error-node-subcommand-required")))?;
         let kv = parse_key_values(rest)?;
 
         match subcommand.as_str() {
@@ -48,7 +48,13 @@ impl TuiApp {
                     .services
                     .node_draft_from_values(node_draft_values_from_kv(&self.services, &kv)?);
                 let node = self.services.add_node(draft)?;
-                self.log(format!("saved node {} ({})", node.name, node.id));
+                self.log(tr2(
+                    "tui-status-saved-node",
+                    "name",
+                    &node.name,
+                    "id",
+                    &node.id,
+                ));
             }
             "edit" => {
                 let patch = self
@@ -57,15 +63,26 @@ impl TuiApp {
                 let node = self
                     .services
                     .update_node(required_kv_alt(&kv, &["target", "id", "name"])?, patch)?;
-                self.log(format!("updated node {} ({})", node.name, node.id));
+                self.log(tr2(
+                    "tui-status-updated-node",
+                    "name",
+                    &node.name,
+                    "id",
+                    &node.id,
+                ));
             }
             "delete" => {
                 let removed = self
                     .services
                     .delete_node(required_kv_alt(&kv, &["target", "id", "name"])?)?;
-                self.log(format!("removed {} node(s)", removed));
+                self.log(tr_n("tui-status-removed-nodes", "count", removed as i64));
             }
-            other => return Err(anyhow!("unsupported node subcommand: {other}")),
+            other => {
+                return Err(anyhow!(
+                    "{}",
+                    tr1("error-unsupported-node-subcommand", "command", other)
+                ))
+            }
         }
 
         self.refresh_all()?;
@@ -76,20 +93,23 @@ impl TuiApp {
         let kv = parse_key_values(args)?;
         let path = required_kv(&kv, "path")?;
         let path = PathBuf::from(path);
-        let metadata = std::fs::metadata(&path)
-            .with_context(|| format!("accessing import path {}", path.display()))?;
+        let metadata = std::fs::metadata(&path).with_context(|| {
+            tr1("tui-form-submit-import-access", "path", path.display())
+        })?;
         if !(metadata.is_file() || metadata.is_dir()) {
             return Err(anyhow!(
-                "import path must be a file or directory: {}",
-                path.display()
+                "{}",
+                tr1("tui-form-submit-import-path-type", "path", path.display())
             ));
         }
         if metadata.is_file() {
-            std::fs::File::open(&path)
-                .with_context(|| format!("opening import file {}", path.display()))?;
+            std::fs::File::open(&path).with_context(|| {
+                tr1("tui-form-submit-import-open", "path", path.display())
+            })?;
         } else {
-            std::fs::read_dir(&path)
-                .with_context(|| format!("reading import directory {}", path.display()))?;
+            std::fs::read_dir(&path).with_context(|| {
+                tr1("tui-form-submit-import-read-dir", "path", path.display())
+            })?;
         }
 
         self.start_task(BackgroundTask::Import { path })?;
@@ -137,7 +157,7 @@ impl TuiApp {
     pub(super) fn exec_local(&mut self, args: &[String]) -> anyhow::Result<()> {
         let (subcommand, rest) = args
             .split_first()
-            .ok_or_else(|| anyhow!("local subcommand required"))?;
+            .ok_or_else(|| anyhow!("{}", tr("error-local-subcommand-required")))?;
 
         match subcommand.as_str() {
             "studies" => {
@@ -164,7 +184,7 @@ impl TuiApp {
 
                 let studies = self.services.local_studies_filtered(&filters)?;
                 if studies.is_empty() {
-                    self.log("No indexed local studies");
+                    self.log(tr("cli-msg-no-local-studies"));
                 } else {
                     for study in studies {
                         self.log(crate::tui::format_study_row(&study));
@@ -180,7 +200,7 @@ impl TuiApp {
 
                 let series = self.services.local_series(study_instance_uid)?;
                 if series.is_empty() {
-                    self.log("No indexed local series");
+                    self.log(tr("tui-empty-local-series"));
                 } else {
                     for row in &series {
                         self.log(crate::tui::format_series_row(row));
@@ -208,7 +228,7 @@ impl TuiApp {
 
                 let instances = self.services.local_instances(series_instance_uid)?;
                 if instances.is_empty() {
-                    self.log("No indexed local instances");
+                    self.log(tr("tui-empty-local-instances"));
                 } else {
                     for row in &instances {
                         self.log(crate::tui::format_instance_row(row));
@@ -223,7 +243,12 @@ impl TuiApp {
                 self.focus = crate::tui::state::FocusPane::Local;
                 self.detail_scroll = 0;
             }
-            other => return Err(anyhow!("unsupported local subcommand: {other}")),
+            other => {
+                return Err(anyhow!(
+                    "{}",
+                    tr1("error-unsupported-local-subcommand", "command", other)
+                ))
+            }
         }
 
         Ok(())

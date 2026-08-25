@@ -33,12 +33,17 @@ impl TuiApp {
             history_index: None,
             draft: String::new(),
             logs: vec![
-                "Press F1 or ? for help. Focus Remote nodes and press 'a' to add one.".to_string(),
-                format!(
-                    "Configured listener {} as AE {} ({})",
-                    status.listener_addr, status.local_ae_title, status.receiver_mode
+                tr("tui.log.welcome"),
+                tr3(
+                    "tui.status.configured-listener",
+                    "addr",
+                    &status.listener_addr,
+                    "ae",
+                    &status.local_ae_title,
+                    "mode",
+                    &status.receiver_mode,
                 ),
-                format!("Logging to {}", status.log_dir),
+                tr1("tui.log.logging-to", "path", &status.log_dir),
             ],
             running_task: None,
             queued_tasks: VecDeque::new(),
@@ -151,9 +156,10 @@ impl TuiApp {
     }
 
     pub(super) fn log_task_queued(&mut self, description: impl AsRef<str>) {
-        self.log(format!(
-            "Queued operation: {}",
-            description.as_ref().trim_end()
+        self.log(tr1(
+            "tui-status-queued-op",
+            "op",
+            description.as_ref().trim_end(),
         ));
     }
 
@@ -181,9 +187,9 @@ impl TuiApp {
             }
 
             // Best-effort immediate feedback.
-            self.log("Cancellation requested");
+            self.log(tr("tui-status-cancel-requested"));
         } else {
-            self.log("No active task to cancel (nothing is running)");
+            self.log(tr("tui-status-no-active-task"));
         }
     }
 
@@ -202,27 +208,33 @@ impl TuiApp {
         };
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(vec![
-            Span::styled("Task ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("#{}", task.id)),
-        ]));
-        lines.push(Line::from(format!("Status: {}", task.status)));
-        lines.push(Line::from(format!("Description: {}", task.description)));
+        lines.push(Line::from(tr1("tui-inspect-task", "id", task.id)));
+        lines.push(Line::from(tr1(
+            "tui-inspect-status",
+            "status",
+            task.status.to_string(),
+        )));
+        lines.push(Line::from(tr1(
+            "tui-inspect-description",
+            "description",
+            &task.description,
+        )));
         if let Some(progress) = task.progress.as_ref() {
-            lines.push(Line::from(format!(
-                "Progress: {}{}",
-                progress.current,
-                progress
-                    .total
-                    .map(|total| format!("/{total}"))
-                    .unwrap_or_default()
+            let progress_text = match progress.total {
+                Some(total) => format!("{}/{}", progress.current, total),
+                None => progress.current.to_string(),
+            };
+            lines.push(Line::from(tr1(
+                "tui-inspect-progress",
+                "progress",
+                progress_text,
             )));
         }
 
         if let Some(summary) = task.summary.as_ref() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Summary:",
+                tr("tui-inspect-summary"),
                 Style::default().add_modifier(Modifier::BOLD),
             )));
 
@@ -251,7 +263,7 @@ impl TuiApp {
             .collect();
 
         if recent_logs.is_empty() {
-            lines.push(Line::from("(no logs)"));
+            lines.push(Line::from(tr("tui-inspect-no-logs")));
         } else {
             recent_logs.reverse();
             for line in recent_logs {
@@ -260,7 +272,7 @@ impl TuiApp {
         }
 
         self.modal = Some(ModalState::TaskInspect(TaskInspectState {
-            title: "Task details".to_string(),
+            title: tr("tui.pane.task-details"),
             content: Text::from(lines),
         }));
     }
@@ -462,14 +474,17 @@ impl TuiApp {
                 // Also surface a user-visible message, consistent with other task
                 // lifecycle feedback.
                 match reason.as_deref() {
-                    Some("Cancellation requested") => {
-                        self.log("Cancellation requested");
+                    Some(reason)
+                        if reason == tr("tui-status-cancel-requested")
+                            || reason == tr("error-operation-cancelled") =>
+                    {
+                        self.log(tr("tui-status-cancel-requested"));
                     }
                     Some(other) => {
-                        self.log(&format!("Task cancelled: {other}"));
+                        self.log(tr1("tui-status-task-cancelled-detail", "other", other));
                     }
                     None => {
-                        self.log("Task cancelled");
+                        self.log(tr("tui-status-task-cancelled"));
                     }
                 }
 
@@ -498,69 +513,83 @@ impl TuiApp {
                 self.query_results = matches;
                 self.selected_query_result = normalized_selection(None, self.query_results.len());
                 self.focus = FocusPane::Query;
-                self.log(format!(
-                    "query returned {} matches",
-                    self.query_results.len()
+                self.log(tr_n(
+                    "tui-task-query-done",
+                    "count",
+                    self.query_results.len() as i64,
                 ));
             }
             TaskResult::Query(Err(error)) => {
                 self.query_results.clear();
                 self.selected_query_result = normalized_selection(None, 0);
-                self.log(format!("query failed: {error}"));
+                self.log(tr1("tui-status-query-failed", "error", error.to_string()));
             }
             TaskResult::Retrieve(Ok(outcome)) => {
-                self.log(format!(
-                    "retrieve status=0x{:04X} completed={} failed={} warning={} remaining={}",
-                    outcome.final_status,
+                self.log(tr5(
+                    "tui-status-retrieve-ok",
+                    "status",
+                    format!("{:04X}", outcome.final_status),
+                    "completed",
                     outcome.completed,
+                    "failed",
                     outcome.failed,
+                    "warning",
                     outcome.warning,
+                    "remaining",
                     outcome.remaining,
                 ));
                 self.refresh_local_studies()?;
             }
             TaskResult::Retrieve(Err(error)) => {
-                self.log(format!("retrieve failed: {error}"));
+                self.log(tr1("tui-status-retrieve-failed", "error", error.to_string()));
             }
             TaskResult::Import(Ok(report)) => {
-                self.log(format!(
-                    "scanned={} accepted={} duplicates={} unreadable={} invalid_dicom={} rejected_total={} stored_bytes={}",
-                    report.scanned_files,
-                    report.accepted,
-                    report.duplicates,
-                    report.unreadable,
-                    report.invalid_dicom,
-                    report.rejected(),
-                    report.stored_bytes,
+                self.log(tr_pairs(
+                    "tui-status-import-counts",
+                    &[
+                        ("scanned", report.scanned_files.to_string()),
+                        ("accepted", report.accepted.to_string()),
+                        ("duplicates", report.duplicates.to_string()),
+                        ("unreadable", report.unreadable.to_string()),
+                        ("invalid", report.invalid_dicom.to_string()),
+                        ("rejected", report.rejected().to_string()),
+                        ("bytes", report.stored_bytes.to_string()),
+                    ],
                 ));
                 const IMPORT_FAILURE_LOG_LIMIT: usize = 5;
                 if !report.failures.is_empty() {
                     for failure in report.failures.iter().take(IMPORT_FAILURE_LOG_LIMIT) {
-                        self.log(format!("failure: {failure}"));
+                        self.log(tr1("tui-status-failure", "failure", failure.to_string()));
                     }
                     if report.failures.len() > IMPORT_FAILURE_LOG_LIMIT {
-                        self.log(format!(
-                            "and {} more failures omitted",
-                            report.failures.len() - IMPORT_FAILURE_LOG_LIMIT
+                        self.log(tr_n(
+                            "tui-status-more-failures",
+                            "n",
+                            (report.failures.len() - IMPORT_FAILURE_LOG_LIMIT) as i64,
                         ));
                     }
                 }
                 self.refresh_local_studies()?;
             }
             TaskResult::Import(Err(error)) => {
-                self.log(format!("import failed: {error}"));
+                self.log(tr1("tui-task-import-failed", "error", error.to_string()));
             }
             TaskResult::Send(Ok(outcome)) => {
-                self.log(format!(
-                    "send attempted={} sent={} failed={}",
-                    outcome.attempted, outcome.sent, outcome.failed,
+                self.log(tr3(
+                    "tui-status-send-ok",
+                    "attempted",
+                    outcome.attempted,
+                    "sent",
+                    outcome.sent,
+                    "failed",
+                    outcome.failed,
                 ));
             }
             TaskResult::Send(Err(error)) => {
-                self.log(format!("send failed: {error}"));
+                self.log(tr1("cli-msg-send-failed", "error", error.to_string()));
             }
             TaskResult::InternalError(error) => {
-                self.log(format!("background task internal error: {error}"));
+                self.log(tr1("tui-task-failed-generic", "error", error.to_string()));
             }
         }
 

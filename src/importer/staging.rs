@@ -37,9 +37,13 @@ pub(super) fn stage_reader_with_sha256<R: Read>(
             let projected_bytes = copied_bytes.saturating_add(bytes_read as u64);
             if let Some(max_file_import_bytes) = max_file_import_bytes {
                 if projected_bytes > max_file_import_bytes {
-                    return Err(anyhow!(
-                        "file too large: {projected_bytes} > {max_file_import_bytes}"
-                    ));
+                    return Err(anyhow!("{}", {
+                        let details = format!("{projected_bytes} > {max_file_import_bytes}");
+                        crate::error::msg_with(
+                            "error-import-file-too-large",
+                            [("details", details.as_str())],
+                        )
+                    }));
                 }
             }
             crate::cancel::ensure_not_cancelled(cancel_flag)?;

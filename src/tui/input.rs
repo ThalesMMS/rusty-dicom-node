@@ -85,7 +85,7 @@ impl TuiApp {
             }
             KeyCode::Char('r') if self.focus != FocusPane::Input => {
                 self.refresh_all()?;
-                self.log("refreshed");
+                self.log(tr("tui-log-refreshed"));
             }
             KeyCode::Char('t') if self.focus == FocusPane::Tasks => {
                 self.selected_task_scope = match self.selected_task_scope {

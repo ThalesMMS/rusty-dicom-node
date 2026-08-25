@@ -200,8 +200,8 @@ fn tasks_pane_shortcut_c_requests_cancellation() {
 
     assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
     assert_eq!(
-        app.logs.last().map(String::as_str),
-        Some("Cancellation requested")
+        app.logs.last().cloned(),
+        Some(tr("tui-status-cancel-requested"))
     );
 }
 
@@ -262,7 +262,7 @@ fn handle_key_r_in_non_input_pane_refreshes_and_logs() {
 
     app.handle_key(key(KeyCode::Char('r'))).unwrap();
 
-    assert_eq!(app.logs.last().map(String::as_str), Some("refreshed"));
+    assert_eq!(app.logs.last().cloned(), Some(tr("tui-log-refreshed")));
     assert_eq!(app.logs.len(), before_count + 1);
 }
 

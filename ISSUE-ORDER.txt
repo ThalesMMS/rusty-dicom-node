@@ -1,0 +1,56 @@
+# ISSUE-ORDER
+
+Source of truth for addressing the current open PACS roadmap issues one at a time.
+
+Generated from live GitHub issues in ThalesMMS/rusty-dicom-node on 2026-06-04.
+
+Ordering rationale:
+- Build archive boundaries before schema/service changes.
+- Normalize indexed metadata before query matching.
+- Centralize ingest before server-side Storage/Query/Retrieve behavior depends on it.
+- Refactor DIMSE dispatch before adding multiple SCP providers.
+- Add retrieve providers before multi-AE runtime and operational observability.
+
+1. #78 [PACS-01] Introduzir portas internas para catálogo e armazenamento de objetos DICOM
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/78
+   Reason: foundational archive catalog/object-store boundary used by ingest, query, and retrieve.
+
+2. #79 [PACS-02] Evoluir o schema local para studies/series/instances com atributos DICOM preservados
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/79
+   Reason: provides normalized metadata and attributes_json needed by query matching.
+
+3. #80 [PACS-03] Centralizar ingestão em serviço transacional de arquivo local
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/80
+   Reason: unifies import and Storage SCP persistence before server-side archive behavior expands.
+
+4. #81 [PACS-04] Implementar modelo de consulta DICOM local e compilador de matching
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/81
+   Reason: query compiler depends on the evolved catalog and is required by C-FIND and retrieve resolution.
+
+5. #83 [PACS-06] Refatorar o listener DIMSE para registry de providers por serviço
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/83
+   Reason: creates the provider registry before adding C-FIND, C-MOVE, and C-GET SCP providers.
+
+6. #82 [PACS-05] Implementar C-FIND SCP sobre o catálogo local
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/82
+   Reason: depends on query matching and fits cleanly after DIMSE provider dispatch exists.
+
+7. #84 [PACS-07] Implementar C-MOVE SCP para retrieve do arquivo local
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/84
+   Reason: uses archive retrieval, query resolution, and the provider registry.
+
+8. #85 [PACS-08] Implementar C-GET SCP usando o mesmo serviço de retrieve local
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/85
+   Reason: reuses the C-MOVE retrieve service and extends retrieval over the inbound association.
+
+9. #86 [PACS-09] Suportar múltiplos AEs locais com seleção de serviços e limites por AE
+   https://github.com/ThalesMMS/rusty-dicom-node/issues/86
+   Reason: multi-AE configuration should be informed by the concrete service provider set.
+
+10. #87 [PACS-10] Criar runtime persistente de servidor com cancelamento e limites de concorrência
+    https://github.com/ThalesMMS/rusty-dicom-node/issues/87
+    Reason: builds on multi-AE configuration and the provider registry to manage listeners and limits.
+
+11. #88 [PACS-11] Adicionar observabilidade operacional para serviços de arquivo DICOM
+    https://github.com/ThalesMMS/rusty-dicom-node/issues/88
+    Reason: should cover the implemented Storage, Query, Retrieve, multi-AE, and runtime paths without rework.

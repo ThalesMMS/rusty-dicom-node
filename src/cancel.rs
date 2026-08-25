@@ -11,7 +11,7 @@ pub struct OperationCancelled;
 
 impl fmt::Display for OperationCancelled {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("operation cancelled")
+        f.write_str(&crate::error::msg("error-operation-cancelled"))
     }
 }
 

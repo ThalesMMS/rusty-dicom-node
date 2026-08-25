@@ -28,11 +28,15 @@ impl ArchiveRetrieveService {
 
     pub fn resolve(&self, request: ArchiveRetrieveRequest) -> Result<Vec<LocalInstance>> {
         if request.level == QueryLevel::Patient {
-            return Err(anyhow!("Patient level retrieve is out of scope"));
+            return Err(anyhow!(
+                "{}",
+                crate::error::msg("error-archive-patient-retrieve-out-of-scope")
+            ));
         }
         if request.model == QueryModel::StudyRoot && request.level == QueryLevel::Patient {
             return Err(anyhow!(
-                "Study Root retrieve does not support Patient level"
+                "{}",
+                crate::error::msg("error-archive-study-root-patient-retrieve")
             ));
         }
 
@@ -60,7 +64,12 @@ fn required_uid(value: Option<String>, name: &str) -> Result<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("{name} is required for this retrieve level"))
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                crate::error::msg_with("error-archive-retrieve-uid-required", [("name", name)])
+            )
+        })
 }
 
 #[cfg(test)]

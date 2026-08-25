@@ -115,9 +115,10 @@ impl StoreScu {
             }
             let Some(negotiated_contexts) = contexts_by_abstract.get(&file.sop_class_uid) else {
                 outcome.failed += 1;
-                outcome.failures.push(format!(
-                    "{}: no negotiated presentation context",
-                    file.path.display()
+                let path = file.path.display().to_string();
+                outcome.failures.push(crate::error::msg_with(
+                    "error-net-no-presentation-context-for-file",
+                    [("path", path.as_str())],
                 ));
                 continue;
             };
@@ -127,10 +128,13 @@ impl StoreScu {
                 self.default_transfer_syntax,
             ) else {
                 outcome.failed += 1;
-                outcome.failures.push(format!(
-                    "{}: no compatible negotiated presentation context for source transfer syntax {}",
-                    file.path.display(),
-                    file.transfer_syntax_uid
+                let path = file.path.display().to_string();
+                outcome.failures.push(crate::error::msg_with(
+                    "error-net-no-compatible-context",
+                    [
+                        ("path", path.as_str()),
+                        ("syntax", file.transfer_syntax_uid.as_str()),
+                    ],
                 ));
                 continue;
             };
@@ -143,9 +147,12 @@ impl StoreScu {
                 }
                 Err(err) => {
                     outcome.failed += 1;
-                    outcome
-                        .failures
-                        .push(format!("{}: {}", file.path.display(), err.source));
+                    let path = file.path.display().to_string();
+                    let message = err.source.to_string();
+                    outcome.failures.push(crate::error::msg_with(
+                        "error-net-path-error",
+                        [("path", path.as_str()), ("err", message.as_str())],
+                    ));
                     if err.association_fatal {
                         association_fatal = true;
                         break;
@@ -192,7 +199,7 @@ impl StoreScu {
         cancel::ensure_not_cancelled(cancel_flag).map_err(StoreSendError::fatal)?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))
             .map_err(StoreSendError::recoverable)?;
 
         let command = create_store_request_command(
@@ -238,23 +245,29 @@ impl StoreScu {
             if let Err(err) = send_result {
                 abort_association(association);
                 return Err(StoreSendError::fatal(
-                    err.context("streaming C-STORE dataset"),
+                    err.context(crate::error::msg("error-net-streaming-dataset")),
                 ));
             }
         } else {
             cancel::ensure_not_cancelled(cancel_flag).map_err(StoreSendError::fatal)?;
             let in_file = dicom_object::open_file(&file.path)
-                .with_context(|| format!("opening {}", file.path.display()))
+                .with_context(|| {
+                    let path = file.path.display().to_string();
+                    crate::error::msg_with("error-net-opening-path", [("path", path.as_str())])
+                })
                 .map_err(StoreSendError::recoverable)?;
             let mut dataset_bytes = Vec::new();
             let mut dataset_writer = CancellableVecWriter::new(&mut dataset_bytes, cancel_flag);
             in_file
                 .write_dataset_with_ts(&mut dataset_writer, transfer_syntax)
                 .with_context(|| {
-                    format!(
-                        "serializing dataset for {} with transfer syntax {}",
-                        file.path.display(),
-                        transfer_syntax.uid()
+                    let path = file.path.display().to_string();
+                    crate::error::msg_with(
+                        "error-net-serializing-dataset",
+                        [
+                            ("path", path.as_str()),
+                            ("syntax", transfer_syntax.uid()),
+                        ],
                     )
                 })
                 .map_err(StoreSendError::recoverable)?;
@@ -292,7 +305,13 @@ impl StoreScu {
                                 return Err(StoreSendError::fatal(anyhow!(
                                     MalformedDimseResponse::new(
                                         Operation::CStore,
-                                        format!("unknown or invalid C-STORE status 0x{status:04X}"),
+                                        crate::error::msg_with(
+                                            "error-net-unknown-status",
+                                            [
+                                                ("operation", "C-STORE"),
+                                                ("status", format!("{status:04X}").as_str()),
+                                            ],
+                                        ),
                                     )
                                 )));
                             };
@@ -311,13 +330,15 @@ impl StoreScu {
                                         meaning = status_info.meaning,
                                         "remote returned non-success C-STORE status"
                                     );
-                                    return Err(StoreSendError::recoverable(anyhow!(
-                                        "remote returned C-STORE status 0x{status:04X} ({}){}",
-                                        status_info.meaning,
-                                        status_info
-                                            .hint
-                                            .map(|hint| format!("; hint: {hint}"))
-                                            .unwrap_or_default()
+                                    let status_hex = format!("{status:04X}");
+                                    let hint = crate::net::hint_suffix(status_info.hint);
+                                    return Err(StoreSendError::recoverable(crate::net::err_with(
+                                        "error-net-store-status",
+                                        [
+                                            ("status", status_hex.as_str()),
+                                            ("meaning", status_info.meaning),
+                                            ("hint", hint.as_str()),
+                                        ],
                                     )));
                                 }
                             }
@@ -343,9 +364,10 @@ impl StoreScu {
                         source = ?source,
                         "remote aborted association during C-STORE"
                     );
-                    return Err(StoreSendError::fatal(anyhow!(
-                        "remote aborted association: {:?}",
-                        source
+                    let source = format!("{source:?}");
+                    return Err(StoreSendError::fatal(crate::net::err_with(
+                        "error-net-remote-aborted",
+                        [("source", source.as_str())],
                     )));
                 }
                 Pdu::ReleaseRQ => {
@@ -357,8 +379,9 @@ impl StoreScu {
                         sop_instance_uid = %file.sop_instance_uid,
                         "fatal association release during C-STORE"
                     );
-                    return Err(StoreSendError::fatal(anyhow!(
-                        "unexpected PDU during C-STORE: ReleaseRQ"
+                    return Err(StoreSendError::fatal(crate::net::err_with(
+                        "error-net-unexpected-pdu",
+                        [("operation", "C-STORE"), ("pdu", "ReleaseRQ")],
                     )));
                 }
                 other => {
@@ -369,9 +392,10 @@ impl StoreScu {
                         pdu = ?other,
                         "unexpected PDU during C-STORE"
                     );
-                    return Err(StoreSendError::fatal(anyhow!(
-                        "unexpected PDU during C-STORE: {:?}",
-                        other
+                    let pdu = format!("{other:?}");
+                    return Err(StoreSendError::fatal(crate::net::err_with(
+                        "error-net-unexpected-pdu",
+                        [("operation", "C-STORE"), ("pdu", pdu.as_str())],
                     )));
                 }
             }
@@ -417,7 +441,13 @@ impl StoreScu {
                 dataset_bytes,
             ),
         }
-        .with_context(|| format!("sending buffered dataset for {}", path.display()))
+        .with_context(|| {
+            let path = path.display().to_string();
+            crate::error::msg_with(
+                "error-net-sending-buffered-dataset",
+                [("path", path.as_str())],
+            )
+        })
         .map_err(|err| {
             abort_association(association);
             StoreSendError::fatal(err)
@@ -484,44 +514,51 @@ fn is_streaming_transfer_syntax(uid: &str) -> bool {
 }
 
 pub(crate) fn open_part10_dataset_reader(path: &Path) -> Result<File> {
-    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    skip_part10_file_meta(&mut file)
-        .with_context(|| format!("locating dataset in {}", path.display()))?;
+    let mut file = File::open(path).with_context(|| {
+        let path = path.display().to_string();
+        crate::error::msg_with("error-net-opening-path", [("path", path.as_str())])
+    })?;
+    skip_part10_file_meta(&mut file).with_context(|| {
+        let path = path.display().to_string();
+        crate::error::msg_with("error-net-locating-dataset", [("path", path.as_str())])
+    })?;
     Ok(file)
 }
 
 fn skip_part10_file_meta(file: &mut File) -> Result<()> {
     let mut preamble = [0_u8; 132];
     file.read_exact(&mut preamble)
-        .context("reading Part 10 preamble")?;
+        .context(crate::error::msg("error-net-part10-preamble"))?;
     if &preamble[128..] != b"DICM" {
-        return Err(anyhow!("missing Part 10 DICM marker"));
+        return Err(crate::net::err("error-net-missing-dicm"));
     }
 
     loop {
-        let element_start = file.stream_position().context("reading file position")?;
+        let element_start = file
+            .stream_position()
+            .context(crate::error::msg("error-net-file-position"))?;
         let mut tag = [0_u8; 4];
         match file.read_exact(&mut tag) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(err) => return Err(err).context("reading File Meta Information tag"),
+            Err(err) => return Err(err).context(crate::error::msg("error-net-file-meta-tag")),
         }
 
         let group = u16::from_le_bytes([tag[0], tag[1]]);
         if group != 0x0002 {
             file.seek(SeekFrom::Start(element_start))
-                .context("rewinding to first dataset element")?;
+                .context(crate::error::msg("error-net-rewinding-dataset"))?;
             return Ok(());
         }
 
         let mut vr = [0_u8; 2];
         file.read_exact(&mut vr)
-            .context("reading File Meta Information VR")?;
+            .context(crate::error::msg("error-net-file-meta-vr"))?;
 
         let value_len = if uses_32_bit_explicit_vr_length(&vr) {
             let mut reserved_and_len = [0_u8; 6];
             file.read_exact(&mut reserved_and_len)
-                .context("reading File Meta Information length")?;
+                .context(crate::error::msg("error-net-file-meta-length"))?;
             u32::from_le_bytes([
                 reserved_and_len[2],
                 reserved_and_len[3],
@@ -531,12 +568,12 @@ fn skip_part10_file_meta(file: &mut File) -> Result<()> {
         } else {
             let mut len = [0_u8; 2];
             file.read_exact(&mut len)
-                .context("reading File Meta Information length")?;
+                .context(crate::error::msg("error-net-file-meta-length"))?;
             u16::from_le_bytes(len) as u64
         };
 
         file.seek(SeekFrom::Current(value_len as i64))
-            .context("skipping File Meta Information value")?;
+            .context(crate::error::msg("error-net-file-meta-value"))?;
     }
 }
 
@@ -565,7 +602,7 @@ fn process_store_response_pdata(
         match value.value_type {
             PDataValueType::Command => command_accumulator.feed(value)?,
             PDataValueType::Data => {
-                return Err(anyhow!("unexpected dataset fragment in C-STORE response"));
+                return Err(crate::net::err("error-net-unexpected-dataset-fragment"));
             }
         }
     }
@@ -586,8 +623,13 @@ fn process_store_response_pdata(
     if command_field != 0x8001 {
         return Err(anyhow!(MalformedDimseResponse::new(
             Operation::CStore,
-            format!(
-                "unexpected CommandField 0x{command_field:04X} (expected 0x8001 for C-STORE-RSP)"
+            crate::error::msg_with(
+                "error-net-unexpected-command-field",
+                [
+                    ("actual", format!("{command_field:04X}").as_str()),
+                    ("expected", "8001"),
+                    ("rsp", "C-STORE-RSP"),
+                ],
             )
         )));
     }
@@ -600,7 +642,10 @@ fn ensure_complete_store_response(command_accumulator: &PDataAccumulator) -> Res
     if command_accumulator.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!("incomplete C-STORE command response"))
+        Err(crate::net::err_with(
+            "error-net-incomplete-command",
+            [("operation", "C-STORE")],
+        ))
     }
 }
 

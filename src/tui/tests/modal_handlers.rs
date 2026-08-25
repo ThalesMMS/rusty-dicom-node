@@ -339,7 +339,10 @@ fn open_retrieve_modal_without_context_node_logs_error() {
 
     assert!(app.modal.is_none());
     let last_log = app.logs.last().expect("log line");
-    assert!(last_log.contains("query a remote node first"));
+    assert_eq!(
+        last_log,
+        &tr("tui-status-query-before-retrieve")
+    );
 }
 
 #[test]

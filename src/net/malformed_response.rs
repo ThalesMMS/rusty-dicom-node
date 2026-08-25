@@ -28,11 +28,14 @@ impl MalformedDimseResponse {
 
 impl std::fmt::Display for MalformedDimseResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "malformed {:?} DIMSE response: {}; hint: peer sent an invalid or unexpected DIMSE command set",
-            self.operation, self.details
-        )
+        let operation = format!("{:?}", self.operation);
+        f.write_str(&crate::error::msg_with(
+            "error-net-malformed-dimse",
+            [
+                ("operation", operation.as_str()),
+                ("details", self.details.as_str()),
+            ],
+        ))
     }
 }
 
@@ -49,7 +52,10 @@ pub fn require_cmd_u16(
     read_u16_opt_from_mem(command, tag).ok_or_else(|| {
         anyhow!(MalformedDimseResponse::new(
             operation,
-            format!("missing required command field {} ({:?})", name, tag)
+            crate::error::msg_with(
+                "error-net-missing-required-command-field",
+                [("name", name), ("tag", format!("{tag:?}").as_str())],
+            )
         ))
     })
 }

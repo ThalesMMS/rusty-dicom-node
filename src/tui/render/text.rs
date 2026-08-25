@@ -73,69 +73,78 @@ pub(in crate::tui) fn display_optional_detail(value: Option<&str>, fallback: &st
 /// ```
 pub(in crate::tui) fn help_text(view: &TuiView) -> Text<'static> {
     let enter_line = match (view.focus, view.local_drill_down, view.local_instance_drill_down) {
-        (FocusPane::Local, _, true) => "  Enter       No Local-pane action in instance view",
-        (FocusPane::Local, true, false) => {
-            "  Enter       Open instances for the selected local series, or run the command input / submit the active modal"
-        }
-        (FocusPane::Local, false, false) => {
-            "  Enter       Open series for the selected local study, or run the command input / submit the active modal"
-        }
-        _ => {
-            "  Enter       Run the command input, submit the active modal, or open series from Local Studies"
-        }
+        (FocusPane::Local, _, true) => tr("tui-help-enter-instance"),
+        (FocusPane::Local, true, false) => tr("tui-help-enter-series"),
+        (FocusPane::Local, false, false) => tr("tui-help-enter-study"),
+        _ => tr("tui-help-enter-default"),
     };
     let esc_line = if view.focus == FocusPane::Local && view.local_instance_drill_down {
-        "  Esc         Return from Local instances to series, close help/modal, or return focus to command input"
+        tr("tui-help-esc-instances")
     } else if view.focus == FocusPane::Local && view.local_drill_down {
-        "  Esc         Return from Local series to studies, close help/modal, or return focus to command input"
+        tr("tui-help-esc-series")
     } else {
-        "  Esc         Close help/modal, return from Local series, or return focus to command input"
+        tr("tui-help-esc-default")
     };
 
     Text::from(vec![
-        Line::from("Keybindings"),
-        Line::from("  F1 or ?     Open help"),
-        Line::from("  Tab / Shift-Tab  Change focused pane"),
-        Line::from("  Up/Down or j/k   Move selection in list panes"),
-        Line::from("  r           Refresh panes when focus is not in command input"),
-        Line::from("  a/e/d/f     Add, edit, delete, or query from the selected node"),
-        Line::from("  m           Retrieve from the selected query result"),
-        Line::from("  i/s         Import local files or send selected study/series"),
-        Line::from("  c           Edit Storage SCP settings (when focus is on Config pane)"),
+        Line::from(tr("tui-help-title")),
+        Line::from(tr("tui-help-open")),
+        Line::from(tr("tui-help-tab")),
+        Line::from(tr("tui-help-move")),
+        Line::from(tr("tui-help-refresh")),
+        Line::from(tr("tui-help-nodes")),
+        Line::from(tr("tui-help-retrieve")),
+        Line::from(tr("tui-help-import-send")),
+        Line::from(tr("tui-help-config")),
         Line::from(enter_line),
         Line::from(esc_line),
-        Line::from("  q           Quit when no modal is active and focus is not in command input"),
+        Line::from(tr("tui-help-quit")),
         Line::from(""),
-        Line::from("Common commands"),
-        Line::from("  Canonical names match CLI flags without '--', using underscores."),
+        Line::from(tr("tui-help-common-commands")),
+        Line::from(tr("tui-help-canonical-names")),
         Line::from("  node add name=pacs ae=PACSAE host=10.0.0.10 port=104"),
         Line::from("  import path=/data/inbox"),
         Line::from("  query node=pacs patient_name=\"DOE^JOHN\" date_from=20240101"),
         Line::from("  retrieve node=pacs study_uid=1.2.3.4.5 dest=DICOMNODECLIENT"),
         Line::from("  send-study node=archive study_uid=1.2.3.4.5"),
         Line::from(""),
-        Line::from("Current configuration"),
-        Line::from(format!("  AE title: {}", view.status.local_ae_title)),
-        Line::from(format!("  Listener: {}", view.status.listener_addr)),
-        Line::from(format!("  Receiver mode: {}", view.status.receiver_mode)),
-        Line::from(format!(
-            "  strict_pdu: {}",
-            bool_label(view.status.strict_pdu)
+        Line::from(tr("tui-help-current-config")),
+        Line::from(tr1("tui-help-ae-title", "value", &view.status.local_ae_title)),
+        Line::from(tr1("tui-help-listener", "value", &view.status.listener_addr)),
+        Line::from(tr1(
+            "tui-help-receiver-mode",
+            "value",
+            view.status.receiver_mode.to_string(),
         )),
-        Line::from(format!("  max_pdu_length: {}", view.status.max_pdu_length)),
-        Line::from(format!(
-            "  allow_promiscuous_storage: {}",
-            bool_label(view.status.allow_promiscuous_storage)
+        Line::from(tr1(
+            "tui-help-strict-pdu",
+            "value",
+            bool_label(view.status.strict_pdu),
         )),
-        Line::from(format!(
-            "  preferred_store_transfer_syntax: {}",
-            view.status.preferred_store_transfer_syntax
+        Line::from(tr1(
+            "tui-help-max-pdu",
+            "value",
+            view.status.max_pdu_length.to_string(),
         )),
-        Line::from(format!("  Config path: {}", view.status.config_path)),
-        Line::from(format!("  Data dir: {}", view.status.data_dir)),
-        Line::from(format!("  Log dir: {}", view.status.log_dir)),
+        Line::from(tr1(
+            "tui-help-promiscuous",
+            "value",
+            bool_label(view.status.allow_promiscuous_storage),
+        )),
+        Line::from(tr1(
+            "tui-help-ts-pref",
+            "value",
+            &view.status.preferred_store_transfer_syntax,
+        )),
+        Line::from(tr1(
+            "tui-help-config-path",
+            "value",
+            &view.status.config_path,
+        )),
+        Line::from(tr1("tui-help-data-dir", "value", &view.status.data_dir)),
+        Line::from(tr1("tui-help-log-dir", "value", &view.status.log_dir)),
         Line::from(""),
-        Line::from("Close help with Esc, F1, or ?."),
+        Line::from(tr("tui-help-close")),
     ])
 }
 
@@ -160,36 +169,37 @@ pub(in crate::tui) fn footer_status_text(view: &TuiView) -> String {
     if let Some(task) = view.running_task.as_ref() {
         let mut text = running_task_status_line(task);
         if queued_count > 0 {
-            text.push_str(&format!(" | {queued_count} queued"));
+            text.push_str(" | ");
+            text.push_str(&tr_n("tui-footer-queued", "n", queued_count as i64));
         }
         return text;
     }
 
     let mut parts: Vec<String> = vec![
-        "F1/? help".to_string(),
-        "Tab panes".to_string(),
-        "r refresh".to_string(),
+        tr("tui-footer-help"),
+        tr("tui-footer-panes"),
+        tr("tui-footer-refresh"),
     ];
 
     if queued_count > 0 {
-        parts.push(format!("{queued_count} queued"));
+        parts.push(tr_n("tui-footer-queued", "n", queued_count as i64));
     }
 
     match view.focus {
-        FocusPane::Nodes => parts.push("a/e/d/f nodes".to_string()),
-        FocusPane::Query => parts.push("m retrieve".to_string()),
+        FocusPane::Nodes => parts.push(tr("tui-footer-nodes")),
+        FocusPane::Query => parts.push(tr("tui-footer-retrieve")),
         FocusPane::Local if view.local_instance_drill_down => {
-            parts.push("Esc back to series".to_string())
+            parts.push(tr("tui-footer-back-series"))
         }
-        FocusPane::Local if view.local_drill_down => parts.push("Esc back to studies".to_string()),
-        FocusPane::Local => parts.push("Enter series".to_string()),
-        FocusPane::Config => parts.push("c edit config".to_string()),
-        FocusPane::Input => parts.push("Enter run command".to_string()),
+        FocusPane::Local if view.local_drill_down => parts.push(tr("tui-footer-back-studies")),
+        FocusPane::Local => parts.push(tr("tui-footer-enter-series")),
+        FocusPane::Config => parts.push(tr("tui-footer-edit-config")),
+        FocusPane::Input => parts.push(tr("tui-footer-run-command")),
         FocusPane::Logs => {}
         FocusPane::Tasks => {
-            parts.push("Enter inspect".to_string());
-            parts.push("c cancel".to_string());
-            parts.push("t queued/history".to_string());
+            parts.push(tr("tui-footer-inspect"));
+            parts.push(tr("tui-footer-cancel-task"));
+            parts.push(tr("tui-footer-task-scope"));
         }
     }
 
@@ -208,14 +218,14 @@ pub(in crate::tui) fn footer_status_text(view: &TuiView) -> String {
     // Suggestion segment: a non-interactive hint about the next likely action.
     // NOTE: Do not truncate here unconditionally; the footer is width-limited at render time.
     let suggestion = resolve_top_suggestion(suggestion_ctx);
-    let next_segment = format!("Next: {}", suggestion.text);
+    let next_segment = tr1("tui-footer-next", "text", &suggestion.text);
     parts.push(next_segment);
 
     // No telemetry/logging: suggestions are derived deterministically per-render and
     // should not generate logs in normal operation.
 
     if view.focus != FocusPane::Input {
-        parts.push("q quit".to_string());
+        parts.push(tr("tui-footer-quit"));
     }
     parts.join(" | ")
 }
@@ -229,14 +239,7 @@ pub(in crate::tui) fn footer_status_text(view: &TuiView) -> String {
 /// assert!(true); // example usage; inspect `txt` in the TUI environment
 /// ```
 pub(in crate::tui) fn remote_nodes_empty_text() -> Text<'static> {
-    Text::from(vec![
-        Line::from("No remote nodes are saved yet."),
-        Line::from(""),
-        Line::from("Press 'a' in this pane to add one."),
-        Line::from("Or: node add name=pacs"),
-        Line::from("    ae=PACSAE host=10.0.0.10"),
-        Line::from("    port=104"),
-    ])
+    text_from_ftl("tui-empty-remote-nodes")
 }
 
 /// A Text block explaining that no local studies are indexed and showing an example import command.
@@ -247,12 +250,7 @@ pub(in crate::tui) fn remote_nodes_empty_text() -> Text<'static> {
 /// let _ = local_studies_empty_text();
 /// ```
 pub(in crate::tui) fn local_studies_empty_text() -> Text<'static> {
-    Text::from(vec![
-        Line::from("No indexed studies are available yet."),
-        Line::from(""),
-        Line::from("Import local DICOM files first."),
-        Line::from("Example: import path=/data/inbox"),
-    ])
+    text_from_ftl("tui-empty-local-studies")
 }
 
 /// Creates a Text block indicating there are no indexed series for the current study.
@@ -267,19 +265,11 @@ pub(in crate::tui) fn local_studies_empty_text() -> Text<'static> {
 /// assert!(format!("{:?}", txt).contains("No indexed series are available for this study."));
 /// ```
 pub(in crate::tui) fn local_series_empty_text() -> Text<'static> {
-    Text::from(vec![
-        Line::from("No indexed series are available for this study."),
-        Line::from(""),
-        Line::from("Press Esc to return to local studies."),
-    ])
+    text_from_ftl("tui-empty-local-series")
 }
 
 pub(in crate::tui) fn local_instances_empty_text() -> Text<'static> {
-    Text::from(vec![
-        Line::from("No indexed instances are available for this series."),
-        Line::from(""),
-        Line::from("Press Esc to return to series."),
-    ])
+    text_from_ftl("tui-empty-local-instances")
 }
 
 /// Generates the help text shown when there are no query results.
@@ -297,18 +287,13 @@ pub(in crate::tui) fn query_results_empty_text(
     query_context_node_name: Option<&str>,
 ) -> Text<'static> {
     let source_line = match query_context_node_name {
-        Some(node_name) => format!("Last query target: {node_name}"),
-        None => "No query has been run yet.".to_string(),
+        Some(node_name) => tr1("tui-empty-query-last-target", "name", node_name),
+        None => tr("tui-empty-query-none"),
     };
 
-    Text::from(vec![
-        Line::from(source_line),
-        Line::from(""),
-        Line::from("Select a remote node and press 'f' to query."),
-        Line::from("Or: query node=pacs"),
-        Line::from("    patient_name=\"DOE^JOHN\""),
-        Line::from("Press 'm' on a selected result to open retrieve."),
-    ])
+    let mut lines = vec![Line::from(source_line), Line::from("")];
+    lines.extend(text_from_ftl("tui-empty-query-body").lines);
+    Text::from(lines)
 }
 
 /// Return a style used for pane borders/titles when the pane is focused.
@@ -341,23 +326,30 @@ pub(in crate::tui) fn active_block_style(active: bool) -> Style {
 
 pub(in crate::tui) fn config_pane_text(view: &TuiView) -> Text<'static> {
     Text::from(vec![
-        Line::from(format!("AE title: {}", view.status.local_ae_title)),
-        Line::from(format!("Listener: {}", view.status.listener_addr)),
-        Line::from(format!(
-            "strict_pdu: {}",
-            bool_label(view.status.strict_pdu)
+        Line::from(tr1("tui-config-ae-title", "value", &view.status.local_ae_title)),
+        Line::from(tr1("tui-config-listener", "value", &view.status.listener_addr)),
+        Line::from(tr1(
+            "tui-config-strict-pdu",
+            "value",
+            bool_label(view.status.strict_pdu),
         )),
-        Line::from(format!(
-            "allow_promiscuous_storage: {}",
-            bool_label(view.status.allow_promiscuous_storage)
+        Line::from(tr1(
+            "tui-config-promiscuous",
+            "value",
+            bool_label(view.status.allow_promiscuous_storage),
         )),
-        Line::from(format!("max_pdu_length: {}", view.status.max_pdu_length)),
-        Line::from(format!(
-            "TS preference: {}",
-            view.status.preferred_store_transfer_syntax
+        Line::from(tr1(
+            "tui-config-max-pdu",
+            "value",
+            view.status.max_pdu_length.to_string(),
+        )),
+        Line::from(tr1(
+            "tui-config-ts-pref",
+            "value",
+            &view.status.preferred_store_transfer_syntax,
         )),
         Line::from(""),
-        Line::from("Press Tab to focus this pane, then press 'c' to edit."),
+        Line::from(tr("tui-config-hint")),
     ])
 }
 
@@ -579,17 +571,23 @@ pub(in crate::tui) fn format_node_row(node: &RemoteNode) -> String {
 /// println!("{}", row);
 /// ```
 pub(in crate::tui) fn format_study_row(study: &StudySummary) -> String {
-    let patient_name = non_empty_text(study.patient_name.as_deref()).unwrap_or("<no name>");
-    let study_date = non_empty_text(study.study_date.as_deref()).unwrap_or("-");
+    let missing_name = tr("tui-empty-no-name");
+    let patient_name = non_empty_text(study.patient_name.as_deref()).unwrap_or(missing_name.as_str());
+    let formatted_date = non_empty_text(study.study_date.as_deref())
+        .map(crate::i18n::format_operator_date);
+    let study_date = formatted_date.as_deref().unwrap_or("-");
     let modalities = non_empty_text(study.modalities.as_deref()).unwrap_or("-");
+    let mut count_args = HashMap::new();
+    count_args.insert("series".into(), FluentValue::from(study.series_count));
+    count_args.insert("instances".into(), FluentValue::from(study.instance_count));
+    let counts = crate::i18n::t_with("tui-row-study-counts", &count_args);
 
     format!(
-        "{} | {} | {} | {:>2}s/{:<3}i | {}",
+        "{} | {} | {} | {} | {}",
         pad_or_truncate(patient_name, 20),
         pad_or_truncate(study_date, 10),
         pad_or_truncate(modalities, 8),
-        study.series_count,
-        study.instance_count,
+        counts,
         truncate_uid(&study.study_instance_uid, 20),
     )
 }
@@ -615,12 +613,15 @@ pub(in crate::tui) fn format_query_result_row(item: &QueryMatch) -> String {
         .and_then(|value| non_empty_text(Some(value)))
         .or_else(|| non_empty_text(item.study_description.as_deref()))
         .unwrap_or("-");
+    let formatted_date = non_empty_text(item.study_date.as_deref())
+        .map(crate::i18n::format_operator_date);
     let context = item
         .modality
         .as_deref()
         .and_then(|value| non_empty_text(Some(value)))
-        .or_else(|| non_empty_text(item.study_date.as_deref()))
-        .unwrap_or("-");
+        .map(str::to_string)
+        .or(formatted_date)
+        .unwrap_or_else(|| "-".to_string());
     let patient_name = non_empty_text(item.patient_name.as_deref()).unwrap_or("-");
     let primary_uid = item.primary_uid().unwrap_or("-");
 
@@ -628,7 +629,7 @@ pub(in crate::tui) fn format_query_result_row(item: &QueryMatch) -> String {
         "{} | {} | {} | {} | {}",
         pad_or_truncate(&item.level.to_string(), 6),
         pad_or_truncate(patient_name, 20),
-        pad_or_truncate(context, 10),
+        pad_or_truncate(&context, 10),
         pad_or_truncate(description, 24),
         truncate_uid(primary_uid, 20),
     )
@@ -669,10 +670,10 @@ pub(in crate::tui) fn format_series_row(series: &SeriesSummary) -> String {
     let description = non_empty_text(series.series_description.as_deref()).unwrap_or("-");
 
     format!(
-        "{} | {} | {:>4} inst | {}",
+        "{} | {} | {} | {}",
         pad_or_truncate(series_number, 4),
         pad_or_truncate(modality, 8),
-        series.instance_count,
+        tr_n("tui-row-instance-count", "n", series.instance_count),
         pad_or_truncate(description, 28),
     )
 }
@@ -698,10 +699,10 @@ pub(in crate::tui) fn format_instance_row(instance: &LocalInstance) -> String {
 /// assert_eq!(crate::tui::render::text::bool_label(true), "yes");
 /// assert_eq!(crate::tui::render::text::bool_label(false), "no");
 /// ```
-pub(in crate::tui) fn bool_label(value: bool) -> &'static str {
+pub(in crate::tui) fn bool_label(value: bool) -> String {
     if value {
-        "yes"
+        tr("tui-bool-yes")
     } else {
-        "no"
+        tr("tui-bool-no")
     }
 }

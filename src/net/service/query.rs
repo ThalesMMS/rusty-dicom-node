@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use dicom_dictionary_std::{tags, uids};
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_ul::{
@@ -65,12 +65,20 @@ impl QueryProvider {
         presentation_context_id: u8,
     ) -> Result<FindCommand> {
         let message_id = read_u16_opt_from_mem(command, tags::MESSAGE_ID)
-            .ok_or_else(|| anyhow!("missing C-FIND message id"))?;
+            .ok_or_else(|| {
+                crate::net::err_with("error-net-missing-message-id", [("operation", "C-FIND")])
+            })?;
         let sop_class_uid = command
             .element(tags::AFFECTED_SOP_CLASS_UID)
-            .context("missing C-FIND affected SOP class UID")?
+            .context(crate::error::msg_with(
+                "error-net-missing-affected-sop",
+                [("operation", "C-FIND")],
+            ))?
             .to_str()
-            .context("invalid C-FIND affected SOP class UID")?
+            .context(crate::error::msg_with(
+                "error-net-invalid-affected-sop",
+                [("operation", "C-FIND")],
+            ))?
             .trim_end_matches('\0')
             .to_string();
 
@@ -93,18 +101,22 @@ impl QueryProvider {
             .iter()
             .find(|context| context.id == find_command.presentation_context_id)
             .ok_or_else(|| {
-                anyhow!(
-                    "missing negotiated presentation context {}",
-                    find_command.presentation_context_id
+                let id = find_command.presentation_context_id.to_string();
+                crate::net::err_with(
+                    "error-net-no-presentation-context-id",
+                    [("id", id.as_str())],
                 )
             })?;
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
 
         let identifier =
             match DefaultMemObject::read_dataset_with_ts(identifier_bytes, transfer_syntax)
-                .context("reading C-FIND identifier")
+                .context(crate::error::msg_with(
+                    "error-net-reading-identifier",
+                    [("operation", "C-FIND")],
+                ))
             {
                 Ok(identifier) => identifier,
                 Err(err) => {
@@ -136,7 +148,10 @@ impl QueryProvider {
             entry
                 .object
                 .write_dataset_with_ts(&mut dataset_bytes, transfer_syntax)
-                .context("writing C-FIND response dataset")?;
+                .context(crate::error::msg_with(
+                    "error-net-writing-response-dataset",
+                    [("operation", "C-FIND")],
+                ))?;
             self.send_find_response(association, find_command, 0xFF00, Some(dataset_bytes))?;
         }
 
@@ -236,7 +251,10 @@ fn query_model_from_find_sop_class_uid(sop_class_uid: &str) -> Result<QueryModel
     match sop_class_uid.trim_end_matches('\0') {
         uids::STUDY_ROOT_QUERY_RETRIEVE_INFORMATION_MODEL_FIND => Ok(QueryModel::StudyRoot),
         uids::PATIENT_ROOT_QUERY_RETRIEVE_INFORMATION_MODEL_FIND => Ok(QueryModel::PatientRoot),
-        other => Err(anyhow!("unsupported C-FIND model SOP class UID: {other}")),
+        other => Err(crate::net::err_with(
+            "error-net-unsupported-model-sop",
+            [("operation", "C-FIND"), ("uid", other)],
+        )),
     }
 }
 

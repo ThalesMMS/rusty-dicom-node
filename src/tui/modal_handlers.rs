@@ -88,9 +88,12 @@ impl TuiApp {
             KeyCode::Esc | KeyCode::Char('n') => Ok(false),
             KeyCode::Enter | KeyCode::Char('y') => {
                 let removed = self.services.delete_node(&confirm.node.id)?;
-                self.log(format!(
-                    "removed {} node(s); last target was {}",
-                    removed, confirm.node.name
+                self.log(tr_n1(
+                    "tui-status-removed-nodes-target",
+                    "count",
+                    removed as i64,
+                    "name",
+                    &confirm.node.name,
                 ));
                 self.refresh_all()?;
                 Ok(false)
@@ -445,7 +448,7 @@ impl TuiApp {
                     &cfg,
                     crate::services::TuiReceiverMode::OnDemandForLocalRetrieve,
                 );
-                self.log("saved storage SCP settings (restart required)");
+                self.log(tr("tui-status-saved-scp"));
                 return Ok(false);
             }
             KeyCode::Char(ch) => {
@@ -483,7 +486,13 @@ impl TuiApp {
                     .services
                     .node_draft_from_values(node_draft_values_from_form(values));
                 let node = self.services.add_node(draft)?;
-                self.log(format!("saved node {} ({})", node.name, node.id));
+                self.log(tr2(
+                    "tui-status-saved-node",
+                    "name",
+                    &node.name,
+                    "id",
+                    &node.id,
+                ));
                 self.refresh_all()?;
                 self.select_node_by_id(&node.id);
             }
@@ -491,12 +500,18 @@ impl TuiApp {
                 let target = form
                     .target
                     .as_ref()
-                    .ok_or_else(|| anyhow!("edit form lost its target node"))?;
+                    .ok_or_else(|| anyhow!("{}", tr("error-edit-form-lost-target")))?;
                 let patch = self
                     .services
                     .node_patch_from_cli(node_patch_values_from_form(values))?;
                 let node = self.services.update_node(&target.id, patch)?;
-                self.log(format!("updated node {} ({})", node.name, node.id));
+                self.log(tr2(
+                    "tui-status-updated-node",
+                    "name",
+                    &node.name,
+                    "id",
+                    &node.id,
+                ));
                 self.refresh_all()?;
                 self.select_node_by_id(&node.id);
             }
@@ -509,7 +524,7 @@ impl TuiApp {
         if let Some(node) = self.selected_node().cloned() {
             self.modal = Some(ModalState::EditNode(NodeFormState::edit(&node)));
         } else {
-            self.log("select a remote node first");
+            self.log(tr("tui-status-select-node"));
         }
     }
 
@@ -517,7 +532,7 @@ impl TuiApp {
         if let Some(node) = self.selected_node().cloned() {
             self.modal = Some(ModalState::ConfirmDeleteNode(DeleteConfirmState { node }));
         } else {
-            self.log("select a remote node first");
+            self.log(tr("tui-status-select-node"));
         }
     }
 
@@ -525,13 +540,13 @@ impl TuiApp {
         if let Some(node) = self.selected_node().cloned() {
             self.modal = Some(ModalState::Query(QueryFormState::new(node)));
         } else {
-            self.log("select a remote node first");
+            self.log(tr("tui-status-select-node"));
         }
     }
 
     pub(super) fn open_retrieve_modal(&mut self) {
         let Some(result) = self.selected_query_result().cloned() else {
-            self.log("select a query result first");
+            self.log(tr("tui-status-select-query"));
             return;
         };
 
@@ -540,7 +555,7 @@ impl TuiApp {
             .clone()
             .or_else(|| self.selected_node().cloned())
         else {
-            self.log("query a remote node first so retrieve knows which node to use");
+            self.log(tr("tui-status-query-before-retrieve"));
             return;
         };
 
@@ -551,7 +566,11 @@ impl TuiApp {
             &self.services.config.local_ae_title,
         ) {
             Ok(form) => self.modal = Some(ModalState::Retrieve(form)),
-            Err(error) => self.log(format!("cannot open retrieve flow: {error}")),
+            Err(error) => self.log(tr1(
+                "tui-status-retrieve-open-failed",
+                "error",
+                error.to_string(),
+            )),
         }
     }
 
@@ -567,7 +586,7 @@ impl TuiApp {
 
     pub(super) fn open_send_modal(&mut self) {
         let Some(study) = self.selected_local_study().cloned() else {
-            self.log("select a local study first");
+            self.log(tr("tui-status-select-study"));
             return;
         };
 

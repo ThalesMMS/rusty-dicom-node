@@ -4,7 +4,7 @@ use std::{
     net::TcpStream,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use dicom_dictionary_std::tags;
 use dicom_object::FileMetaTableBuilder;
 use dicom_transfer_syntax_registry::{TransferSyntaxIndex, TransferSyntaxRegistry};
@@ -83,7 +83,9 @@ impl StorageProvider {
         presentation_context_id: u8,
     ) -> Result<StoreCommand> {
         let message_id = read_u16_opt_from_mem(command, tags::MESSAGE_ID)
-            .ok_or_else(|| anyhow!("missing C-STORE message id"))?;
+            .ok_or_else(|| {
+                crate::net::err_with("error-net-missing-message-id", [("operation", "C-STORE")])
+            })?;
         let sop_class_uid = command
             .element(tags::AFFECTED_SOP_CLASS_UID)?
             .to_str()?
@@ -113,21 +115,24 @@ impl StorageProvider {
             .presentation_contexts()
             .iter()
             .find(|pc| pc.id == store_command.presentation_context_id)
-            .ok_or_else(|| anyhow!("missing negotiated presentation context"))?;
+            .ok_or_else(|| crate::net::err("error-net-no-presentation-context"))?;
 
         let transfer_syntax = TransferSyntaxRegistry
             .get(&context.transfer_syntax)
-            .ok_or_else(|| anyhow!("unsupported negotiated transfer syntax"))?;
+            .ok_or_else(|| crate::net::err("error-net-unsupported-transfer-syntax"))?;
 
         let mut remove_dataset_on_drop = RemoveFileOnDrop::new(dataset_path);
 
         let mut dataset_file = fs::File::open(dataset_path)
-            .with_context(|| format!("opening {}", dataset_path.display()))?;
+            .with_context(|| {
+                let path = dataset_path.display().to_string();
+                crate::error::msg_with("error-net-opening-path", [("path", path.as_str())])
+            })?;
         dataset_file
             .seek(SeekFrom::Start(0))
-            .context("seeking temp dataset file")?;
+            .context(crate::error::msg("error-net-seeking-temp-dataset"))?;
         let obj = DefaultMemObject::read_dataset_with_ts(&mut dataset_file, transfer_syntax)
-            .context("reading incoming C-STORE dataset")?;
+            .context(crate::error::msg("error-net-reading-incoming-dataset"))?;
 
         remove_dataset_on_drop.disarm();
 
@@ -136,7 +141,7 @@ impl StorageProvider {
             .media_storage_sop_instance_uid(&store_command.sop_instance_uid)
             .transfer_syntax(&context.transfer_syntax)
             .build()
-            .context("building file meta table")?;
+            .context(crate::error::msg("error-net-building-file-meta"))?;
 
         let file_obj = obj.with_exact_meta(meta);
 
@@ -148,17 +153,24 @@ impl StorageProvider {
         let mut remove_staged_on_drop = RemoveFileOnDrop::new(&staged_path);
 
         fs::create_dir_all(&self.paths.managed_store_dir)
-            .with_context(|| format!("creating {}", self.paths.managed_store_dir.display()))?;
-        let file = fs::File::create(&staged_path)
-            .with_context(|| format!("creating {}", staged_path.display()))?;
+            .with_context(|| {
+                let path = self.paths.managed_store_dir.display().to_string();
+                crate::error::msg_with("error-net-creating-path", [("path", path.as_str())])
+            })?;
+        let file = fs::File::create(&staged_path).with_context(|| {
+            let path = staged_path.display().to_string();
+            crate::error::msg_with("error-net-creating-path", [("path", path.as_str())])
+        })?;
         let writer = BufWriter::new(file);
         let mut hashing_writer = HashingWriter::new(writer);
-        file_obj
-            .write_all(&mut hashing_writer)
-            .with_context(|| format!("writing {}", staged_path.display()))?;
-        hashing_writer
-            .flush()
-            .with_context(|| format!("flushing {}", staged_path.display()))?;
+        file_obj.write_all(&mut hashing_writer).with_context(|| {
+            let path = staged_path.display().to_string();
+            crate::error::msg_with("error-net-writing-path", [("path", path.as_str())])
+        })?;
+        hashing_writer.flush().with_context(|| {
+            let path = staged_path.display().to_string();
+            crate::error::msg_with("error-net-flushing-path", [("path", path.as_str())])
+        })?;
         let (sha256, file_size_bytes) = hashing_writer.finalize();
 
         self.db.with_transaction(|conn| {
